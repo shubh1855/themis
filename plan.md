@@ -1,113 +1,70 @@
-# Syn3rgy CLI Architecture & Implementation Plan
+# Single-File Python Chess Game Plan
 
-## 1. Overview
-The goal is to build a highly concurrent, standalone CLI/TUI application in Go that allows managing Projects, Chats, and Tasks. The application must support running and monitoring parallel background tasks via goroutines while handling interactive operations concurrently. Crucially, the app must compile down to a single binary with no external daemon setups (like a separate Qdrant server).
+## Project Summary
+A fully functional, single-file chess game implemented in Python. The application features a graphical user interface (GUI) for piece movement and basic move validation logic.
 
-## 2. Tech Stack Setup
-* **UI Framework:** [Bubble Tea](https://github.com/charmbracelet/bubbletea) (by Charm) for the interactive terminal user interface, `lipgloss` for styling, and `bubblemacs` / `bubbles` for components.
-* **Concurrency:** Native Go Contexts, Goroutines, and Channels, integrated with Bubble Tea's `tea.Cmd` message loop.
-* **Relational Storage:** `SQLite` (using pure-Go `modernc.org/sqlite` to avoid CGO cross-compilation headaches, or `mattn/go-sqlite3`).
-* **Vector Storage (Addressing the Qdrant constraint):**
-  * **The Problem:** Qdrant is written in Rust and operates as a separate server. Shipping it requires either Docker or packaging the Qdrant binary separately, which violates the "standalone single package" requirement.
-  * **The Solution:** We strictly need Qdrant's API, the CLI could transparently download the Qdrant executable on first run and manage the process via Go's `os/exec` in the background—but pure embedded is cleaner (cross platform).
+## Stack and Rationale
+- **Language:** Python 3.x
+- **GUI Library:** `tkinter` (Standard Library)
+  - *Rationale:* Zero external dependencies, ensuring the single-file distribution is portable and runs immediately on any standard Python installation.
 
----
+## Folder Structure
+Since this is a single-file project, the structure is as follows:
+- `chess_game.py` (Contains all logic, classes, and GUI code)
 
-## 3. Application Design & UI Flow
+## Class Architecture
 
-The CLI will operate as a Terminal UI (TUI) with a router that switches between "Views" or "Pages".
+### 1. `Piece` (Base Class)
+- **Attributes:** `color` (White/Black), `name` (Pawn, Rook, etc.), `symbol` (Unicode character for display).
+- **Methods:** `is_valid_move(start_pos, end_pos, board)` $\rightarrow$ returns Boolean.
 
-### A. The Dashboard (First Page)
-* **Purpose:** The entry point.
-* **Components:**
-  * **Recent Activity List:** Shows the latest modified Projects and Chats to select from.
-  * **Global Status Bar:** Shows active background tasks running globally.
-  * **Keybindings:** `Enter` to open a project/chat, `n` to create new, `q` to quit, `t` to open Task Manager.
+### 2. `Piece Subclasses` (Pawn, Rook, Knight, Bishop, Queen, King)
+- Each implements its own `is_valid_move` logic based on chess rules.
 
-### B. Workspace (Project / Chat View)
-* **Splitscreen / Tabs:**
-  * **Main Area:** Active chat session or project management (creating sub-tasks, triggering actions).
-  * **Right Sidebar (Collapsible):** Live view of Goroutines/Tasks specific to this project (e.g., "Embedding codebase [█████░░] 75%").
-* **Switching:** You can hop out of a Chat back to the Workspace, while the model is still streaming its response in the background or a shell command is running. Everything is asynchronous.
+### 3. `Board` (Game Logic)
+- **Attributes:** `grid` (8x8 2D list containing Piece objects or None), `turn` (White/Black).
+- **Methods:** 
+  - `move_piece(start_pos, end_pos)`: Validates move via the Piece class and updates grid.
+  - `get_piece(pos)`: Returns piece at coordinate.
+  - `switch_turn()`: Toggles active player.
 
-### C. Task Manager / Parallel Stuff View
-* A dedicated view showing the worker pool. You can see what goroutines are doing (e.g., "Syncing repo", "Generating Embeddings for Chat X"). You can cancel (`ctrl+c` on a selected task to cancel its `context.Context`).
+### 4. `ChessGUI` (Presentation Layer)
+- **Attributes:** `root` (Tk instance), `canvas` (Tk Canvas), `selected_square` (tracking current click).
+- **Methods:**
+  - `draw_board()`: Renders the 8x8 grid.
+  - `draw_pieces()`: Places Unicode chess symbols on the canvas.
+  - `handle_click(event)`: Manages the selection and movement flow.
 
----
+## Dependencies
+- None (Standard Library only).
 
-## 4. Concurrency Architecture (Goroutines)
+## Risk Register
+| Risk | Likelihood | Mitigation |
+| :--- | :--- | :--- |
+| Complex move validation (Castling/En Passant) | High | Implement basic piece moves first; mark advanced moves as deferred. |
+| GUI Layout issues on different OS | Low | Use fixed square sizes (e.g., 60x60) for consistent rendering. |
+| Single-file bloat | Low | Use clean class separations to keep the file readable. |
 
-To allow the user to switch between "doing tasks" and "letting the AI/system do parallel stuff":
+## Milestones
 
-1. **Job Queue / Worker Pool:** We create an `internal/workers` package.
-2. **Task Structure:**
-   ```go
-   type Task struct {
-       ID       string
-       Type     string // "LLM_INFERENCE", "FILE_INDEX", etc.
-       Status   string
-       Progress float64
-       Cancel   context.CancelFunc
-   }
-   ```
-3. **Dispatch & Reporting (The Magic):**
-   * When a user triggers an action (e.g., "Index this codebase"), the UI layer sends a message to the Job Queue.
-   * The Job Queue spawns a `goroutine` via a waitgroup or an interface manager.
-   * As the goroutine works, it periodically sends `ProgressMsg` to the Bubble Tea application via `tea.Program.Send(ProgressMsg{})`.
-   * The Bubble Tea `Update()` function catches these messages and rerenders the UI, animating the progress bar natively while the user continues typing to a chat.
+### M1: Core Logic & Piece Definitions
+- **Owner:** Hephaestus
+- **DoD:** `Board` and `Piece` classes implemented; unit-testable move validation for all pieces (excluding special moves like castling).
 
----
+### M2: GUI Implementation
+- **Owner:** Hephaestus
+- **DoD:** `tkinter` window renders a board and places pieces using Unicode symbols; pieces can be moved via clicking.
 
-## 5. Storage Architecture
+### M3: Integration & Polish
+- **Owner:** Hephaestus
+- **DoD:** Turn-based logic enforced; invalid moves trigger a visual warning or are ignored; final single-file cleanup.
 
-We split the logic into `internal/storage` with repository patterns:
+### M4: Verification
+- **Owner:** Ares
+- **DoD:** All pieces move according to basic rules; no crashes on invalid inputs; GUI is responsive.
 
-```go
-type Storage struct {
-    sqlite *sql.DB
-    vector VectorDB // Interfaces out the specific choice
-}
-```
-
-### Relational Schema (SQLite)
-* **Projects:** `id`, `name`, `path`, `created_at`, `updated_at`
-* **Chats:** `id`, `project_id`, `title`, `created_at`
-* **Messages:** `id`, `chat_id`, `role`, `content`, `timestamp`
-* **Tasks:** (Optional, if persistent task history is needed)
-
-### Vector Schema (Embedded Vector DB)
-* **Collections:** One per Project.
-* **Documents:** Code chunks, markdown chunks, or chat summaries accompanied by floating-point array embeddings.
-* Automatically hydrated in the background by a goroutine when a project is initialized.
-
----
-
-## 6. Directory Structure
-
-```text
-├── cmd/
-│   └── syn3rgy/
-│       └── main.go           # CLI Entrypoint, triggers Bubble Tea
-├── internal/
-│   ├── config/               # Handles loading config file
-│   ├── ui/                   # Bubble Tea components
-│   │   ├── dashboard/        # First page UI (Recent projects/chats)
-│   │   ├── chat/             # Chat UI
-│   │   ├── tasks/            # Background tasks UI
-│   │   └── router/           # Handles switching between views
-│   ├── worker/               # Goroutine dispatcher and contexts
-│   └── storage/              # Database implementations
-│       ├── sqlite/           # Relational schemas
-│       └── vector/           # chromem-go or sqlite-vec abstractions
-├── pkg/
-│   └── llm/                  # Packages for external inference / embedding models
-├── go.mod
-└── go.sum
-```
-
-## 7. Next Steps for Implementation
-1. **Bootstrap the UI:** Start by writing the `main.go` and integrating Bubble Tea with a simple Router that shows a placeholder Dashboard and handles `Ctrl+C` cleanly.
-2. **Implement SQLite Setup:** Create the `storage/sqlite` migrations that run via `go:embed` SQL schemas on app startup. Ensure a seamless zero-setup first launch.
-3. **Spike Vector Storage:** Validate an embedded vector database approach. Create a dummy project, insert 5 chunks with embeddings, and query them.
-4. **Implement Global Worker Pool:** Write the goroutine manager using a map and Contexts, passing an update channel back to the UI.
-5. **Connect the App:** Build the first complete flow -> Open App -> See Dashboard -> Create Project -> Triggers Background Task (seen in Tasks view).
+## Deferred Scope
+- Advanced chess rules: Castling, En Passant, Pawn Promotion.
+- Check/Checkmate detection (Basic move validation only).
+- AI opponent (Human vs Human only).
+- Save/Load game state.
