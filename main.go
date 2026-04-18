@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,20 +9,17 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/prompt"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/llm"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
 	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
 )
-
-type responseMsg struct {
-	text string
-	err  error
-}
 
 // execDoneMsg fires after tea.ExecProcess returns so we can drain the rest of the queue.
 type execDoneMsg struct{ err error }
@@ -35,6 +31,7 @@ type model struct {
 
 	viewport viewport.Model
 	input    textarea.Model
+	spinner  spinner.Model
 
 	history []string
 
@@ -50,8 +47,12 @@ type model struct {
 
 	pendingQueue []tools.ToolRequest
 
-	// Agent state
-	activeAgent llm.AgentID
+	// Agent orchestration
+	activeAgent        llm.AgentID
+	agentHistory       []openai.ChatCompletionMessage
+	pendingDelegations []llm.DelegationMsg // remaining steps from Athena's plan
+	toolCallAgent      llm.AgentID         // which agent invoked the current tool queue
+	pendingToolResults []string            // accumulated tool outputs to return to agent
 
 	// PTY state
 	ptyMaster    *os.File
@@ -104,6 +105,10 @@ func initialModel() model {
 	reg := tools.NewRegistry(fs)
 	perms := tools.NewPermissionManager()
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = ui.SpinnerStyle
+
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
@@ -120,40 +125,14 @@ func initialModel() model {
 		perms:       perms,
 		viewport:    vp,
 		input:       ta,
+		spinner:     sp,
 		history:     []string{},
 		selectedSug: -1,
 	}
 }
 
-func askLLM(client *openai.Client, userPrompt string) tea.Cmd {
-	return func() tea.Msg {
-		resp, err := client.CreateChatCompletion(
-			context.Background(),
-			openai.ChatCompletionRequest{
-				Model: "google/gemma-4-31B-it",
-				Messages: []openai.ChatCompletionMessage{
-					{
-						Role:    openai.ChatMessageRoleSystem,
-						Content: prompt.SystemPrompt,
-					},
-					{
-						Role:    openai.ChatMessageRoleUser,
-						Content: userPrompt,
-					},
-				},
-			},
-		)
-
-		if err != nil {
-			return responseMsg{err: err}
-		}
-
-		return responseMsg{text: resp.Choices[0].Message.Content}
-	}
-}
-
 func (m model) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(textarea.Blink, m.spinner.Tick)
 }
 
 // extractToolRequests parses all newline-delimited JSON tool calls from a response.
@@ -226,15 +205,28 @@ func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	return readCmd
 }
 
-// drainQueue executes tools from the front of the queue until it's empty, a
-// permission prompt is needed, or an interactive run_file is encountered.
-// For interactive commands it returns a tea.ExecProcess cmd; otherwise nil.
+// drainQueue executes tools from the front of the queue until it's empty,
+// a permission prompt is needed, or an interactive run_file is encountered.
 func (m *model) drainQueue() tea.Cmd {
 	for len(m.pendingQueue) > 0 {
-		if m.perms.NeedsPrompt() {
-			return nil // modal will show
-		}
 		req := m.pendingQueue[0]
+
+		// delegate_task: any agent can hand off work to another agent.
+		if req.Tool == "delegate_task" {
+			m.pendingQueue = m.pendingQueue[1:]
+			agentID := llm.ResolveAgentName(req.Agent)
+			if agentID == "" {
+				m.pushOutput("[delegate_task] unknown agent: " + req.Agent)
+				continue
+			}
+			next := llm.DelegationMsg{Target: agentID, Task: req.Content, Context: ""}
+			return func() tea.Msg { return next }
+		}
+
+		// Only gate destructive/side-effecting tools; read_file and mkdir run freely.
+		if tools.NeedsReview(req.Tool) && m.perms.NeedsPrompt() {
+			return nil // permission modal will show for this tool
+		}
 		m.pendingQueue = m.pendingQueue[1:]
 
 		res := m.registry.Execute(req)
@@ -243,8 +235,28 @@ func (m *model) drainQueue() tea.Cmd {
 			return m.startPTY(res.ExecCmd, res.Cleanup)
 		}
 
+		label := req.Tool
+		if req.Path != "" {
+			label += " " + req.Path
+		}
+		if req.Key != "" {
+			label += " " + req.Key
+		}
+		m.pendingToolResults = append(m.pendingToolResults,
+			fmt.Sprintf("[%s] %s", label, res.Output))
 		m.pushOutput("[tool] " + res.Output)
 	}
+
+	// Queue fully drained — send accumulated tool outputs back to the invoking agent.
+	if len(m.pendingToolResults) > 0 && m.toolCallAgent != "" {
+		results := m.pendingToolResults
+		agent := m.toolCallAgent
+		history := m.agentHistory
+		m.pendingToolResults = nil
+		m.loading = true
+		return llm.AskAgentWithResults(m.client, agent, results, history)
+	}
+
 	return nil
 }
 
@@ -252,6 +264,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case spinner.TickMsg:
+		if m.loading || m.running {
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -309,12 +327,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Agent delegation: Zeus delegates to a sub-agent ──────────────────
 	case llm.DelegationMsg:
+		m.loading = true
 		m.activeAgent = msg.Target
+		m.agentHistory = nil
 		delegateText := fmt.Sprintf("delegating to %s %s: %s",
 			llm.AgentEmoji(msg.Target), string(msg.Target), msg.Task)
 		m.pushAgentOutput(llm.AgentZeus, ui.AgentDelegateStyle.Render(delegateText))
 		return m, tea.Batch(
-			llm.AskAgent(m.client, msg.Target, msg.Task, msg.Context),
+			llm.AskAgent(m.client, msg.Target, msg.Task, msg.Context, nil),
 			m.spinner.Tick,
 		)
 
@@ -326,6 +346,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			agent = llm.AgentZeus
 		}
 		m.activeAgent = agent
+		m.agentHistory = msg.History
 
 		if msg.Err != nil {
 			m.pushAgentOutput(agent, "Error: "+msg.Err.Error())
@@ -343,14 +364,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 		if reqs := extractToolRequests(text); len(reqs) > 0 {
-			// Show which agent is invoking tools
 			m.pushAgentOutput(agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
+			m.toolCallAgent = agent // track so results can be sent back
 			m.pendingQueue = reqs
 			return m, m.drainQueue()
 		}
 
+		// If Athena returned a structured plan, queue ALL delegations — not just the first.
+		if agent == llm.AgentAthena {
+			if plan := llm.ParseAthenaPlan(text); plan != nil {
+				if text != "" {
+					m.pushAgentOutput(agent, text)
+				}
+				delegations := llm.DispatchPlanTasks(plan)
+				if len(delegations) > 0 {
+					m.pendingDelegations = delegations[1:]
+					m.loading = true
+					first := delegations[0]
+					return m, func() tea.Msg { return first }
+				}
+				return m, nil
+			}
+		}
+
+		// Agent is done (no more tool calls) — show its response.
+		m.toolCallAgent = ""
 		if text != "" {
 			m.pushAgentOutput(agent, text)
+		}
+
+		// Advance to the next step in the active plan if any remain.
+		if len(m.pendingDelegations) > 0 {
+			next := m.pendingDelegations[0]
+			m.pendingDelegations = m.pendingDelegations[1:]
+			m.loading = true
+			m.agentHistory = nil
+			return m, func() tea.Msg { return next }
 		}
 
 	case tea.KeyMsg:
@@ -371,6 +420,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.startPTY(res.ExecCmd, res.Cleanup)
 				}
 				m.pushOutput("[tool] " + res.Output)
+				if m.toolCallAgent != "" {
+					label := req.Tool
+					if req.Path != "" {
+						label += " " + req.Path
+					}
+					m.pendingToolResults = append(m.pendingToolResults,
+						fmt.Sprintf("[%s] %s", label, res.Output))
+				}
 				return m, m.drainQueue()
 
 			case "a":
@@ -380,6 +437,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "n", "esc":
 				m.pushOutput("[tool] permission denied")
 				m.pendingQueue = nil
+				m.pendingDelegations = nil
+				m.pendingToolResults = nil
+				m.toolCallAgent = ""
 			}
 
 			return m, nil
@@ -435,47 +495,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.loading = true
 			m.activeAgent = llm.AgentZeus
+			m.agentHistory = nil
 			m.suggestions = nil
 			m.selectedSug = -1
 			m.resizeView()
 
-			return m, askLLM(m.client, userPrompt)
+			return m, llm.AskWithOrchestration(m.client, userPrompt)
 		}
 
 		m.viewport, _ = m.viewport.Update(msg)
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
 
-	case responseMsg:
-		m.loading = false
-
-		if msg.err != nil {
-			m.pushOutput("Error: " + msg.err.Error())
-			return m, nil
-		}
-
-		text := strings.TrimSpace(msg.text)
-
-		m.suggestions = nil
-		m.selectedSug = -1
-
-		if idx := strings.LastIndex(text, "SUGGESTIONS: "); idx != -1 {
-			sugJSON := text[idx+len("SUGGESTIONS: "):]
-			text = strings.TrimSpace(text[:idx])
-			if err := json.Unmarshal([]byte(sugJSON), &m.suggestions); err != nil {
-				// if failed to parse, at least we stripped it or maybe we can log safely
-			}
-		}
-
-		m.resizeView()
-
-		reqs := extractToolRequests(text)
-		if len(reqs) > 0 {
-			m.pendingQueue = reqs
-			return m, m.drainQueue()
-		}
-
-		m.pushOutput("AI > " + text)
 	}
 
 	return m, nil
@@ -485,6 +516,8 @@ func (m model) View() string {
 	if m.quit {
 		return ""
 	}
+
+	header := titleStyle.Render("Themis")
 
 	// Status bar text with active agent indicator
 	status := "Ready"

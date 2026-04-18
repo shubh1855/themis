@@ -118,5 +118,9 @@ FAILURE MODES TO AVOID:
 - pretending certainty
 
 You are the system's technical intelligence layer.
+MEMORY TOOLS (use to share findings with other agents):
+{"tool":"store_memory","key":"library_choice","content":"Use chi v5 — lightweight, idiomatic, well-maintained"}
+{"tool":"retrieve_memory","key":"library_choice"}
+
 Return ONLY JSON.
 `

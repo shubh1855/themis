@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 
@@ -15,6 +16,8 @@ type ToolRequest struct {
 	Content   string `json:"content,omitempty"`
 	OldString string `json:"old_string,omitempty"`
 	NewString string `json:"new_string,omitempty"`
+	Agent     string `json:"agent,omitempty"` // for delegate_task
+	Key       string `json:"key,omitempty"`   // for store_memory / retrieve_memory
 }
 
 type ToolResult struct {
@@ -26,11 +29,12 @@ type ToolResult struct {
 }
 
 type Registry struct {
-	FS *FS
+	FS     *FS
+	Memory map[string]string // shared KV store for store_memory / retrieve_memory
 }
 
 func NewRegistry(fs *FS) *Registry {
-	return &Registry{FS: fs}
+	return &Registry{FS: fs, Memory: make(map[string]string)}
 }
 
 // NeedsReview returns true for tools that modify state and should show a
@@ -109,6 +113,23 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 			return fail(err)
 		}
 		return ok("created dir " + req.Path)
+
+	case "store_memory":
+		if req.Key == "" {
+			return fail(errors.New("store_memory requires a key"))
+		}
+		r.Memory[req.Key] = req.Content
+		return ok(fmt.Sprintf("stored key %q (%d chars)", req.Key, len(req.Content)))
+
+	case "retrieve_memory":
+		if req.Key == "" {
+			return fail(errors.New("retrieve_memory requires a key"))
+		}
+		val, exists := r.Memory[req.Key]
+		if !exists {
+			return fail(fmt.Errorf("key not found: %q", req.Key))
+		}
+		return ok(val)
 
 	case "run_file":
 		cmd, cleanup, err := r.FS.BuildRunCmd(req.Path, req.Content)
