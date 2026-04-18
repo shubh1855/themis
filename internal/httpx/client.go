@@ -3,12 +3,10 @@
 package httpx
 
 import (
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/security"
@@ -109,8 +107,8 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		req.Header.Set("User-Agent", c.nextUserAgent())
 	}
 
-	// Accept gzip
-	req.Header.Set("Accept-Encoding", "gzip")
+	// NOTE: Do NOT set Accept-Encoding manually.
+	// http.Transport with DisableCompression=false handles gzip transparently.
 
 	var resp *http.Response
 	err := c.retrier.Do(ctx, func() error {
@@ -143,7 +141,7 @@ func (c *Client) Get(ctx context.Context, url string) (*http.Response, error) {
 }
 
 // GetBody performs a GET request and returns the body as a string.
-// Handles gzip decompression and enforces max body size.
+// Gzip is handled transparently by the transport — no manual decompression needed.
 func (c *Client) GetBody(ctx context.Context, url string) (string, error) {
 	resp, err := c.Get(ctx, url)
 	if err != nil {
@@ -151,17 +149,7 @@ func (c *Client) GetBody(ctx context.Context, url string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	var reader io.Reader = resp.Body
-	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-		gr, gerr := gzip.NewReader(resp.Body)
-		if gerr != nil {
-			return "", fmt.Errorf("httpx: gzip: %w", gerr)
-		}
-		defer gr.Close()
-		reader = gr
-	}
-
-	limited := io.LimitReader(reader, MaxBodySize)
+	limited := io.LimitReader(resp.Body, MaxBodySize)
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		return "", fmt.Errorf("httpx: read body: %w", err)

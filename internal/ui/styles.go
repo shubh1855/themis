@@ -29,62 +29,43 @@ var (
 	SpinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	// Review option styles
-	ReviewAcceptStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("2")).
-				Bold(true).
-				PaddingLeft(1).PaddingRight(2)
-
-	ReviewRejectStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("1")).
-				Bold(true).
-				PaddingLeft(1).PaddingRight(2)
-
-	ReviewNeutralStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("33")).
-				Bold(true).
-				PaddingLeft(1).PaddingRight(2)
-
-	ReviewDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			PaddingLeft(1).PaddingRight(2)
-
-	ReviewSelectedBg = lipgloss.NewStyle().
-				Reverse(true).
-				PaddingLeft(1).PaddingRight(1)
-
-	ReviewHintStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
-
-	ToolLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("205")).
-			Bold(true)
+	ReviewAcceptStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true).PaddingLeft(1).PaddingRight(2)
+	ReviewRejectStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true).PaddingLeft(1).PaddingRight(2)
+	ReviewNeutralStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true).PaddingLeft(1).PaddingRight(2)
+	ReviewDimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).PaddingLeft(1).PaddingRight(2)
+	ReviewSelectedBg   = lipgloss.NewStyle().Reverse(true).PaddingLeft(1).PaddingRight(1)
+	ReviewHintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+	ToolLabelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
 
 	// ── Agent styles ─────────────────────────────────────────────────────
 
-	AgentZeusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("226")).Bold(true) // gold/yellow
+	AgentZeusStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
+	AgentAthenaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Bold(true)
+	AgentHephaestusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+	AgentApolloStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	AgentHermesStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("158")).Bold(true)
+	AgentAresStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	AgentDelegateStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Italic(true)
 
-	AgentAthenaStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("75")).Bold(true) // blue
+	// ── ReAct / Thinking styles ──────────────────────────────────────────
 
-	AgentHephaestusStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("208")).Bold(true) // orange
+	ThinkStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243")).
+			Italic(true).
+			PaddingLeft(2)
 
-	AgentApolloStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("220")).Bold(true) // sun yellow
-
-	AgentHermesStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("158")).Bold(true) // teal/green
-
-	AgentAresStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).Bold(true) // red
-
-	AgentDelegateStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("141")).
-				Italic(true) // purple, delegating indicator
-
-	AgentBadgeStyle = lipgloss.NewStyle().
+	ToolExecStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
 			Bold(true).
-			PaddingLeft(1).PaddingRight(1)
+			PaddingLeft(2)
+
+	ObservationStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				PaddingLeft(4)
+
+	AnswerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("255")).
+			PaddingLeft(1)
 )
 
 // AgentStyle returns the color style for a given agent name.
