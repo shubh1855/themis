@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/prompt"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
 )
 
@@ -31,6 +32,9 @@ type model struct {
 	input    textarea.Model
 
 	history []string
+
+	suggestions []string
+	selectedSug int
 
 	width  int
 	height int
@@ -60,6 +64,15 @@ var (
 	borderStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1)
+
+	suggestionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("243")).
+			PaddingLeft(2)
+
+	selectedSuggestionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("205")).
+			Bold(true).
+			PaddingLeft(2)
 )
 
 func initialModel() model {
@@ -87,16 +100,17 @@ func initialModel() model {
 	ta.ShowLineNumbers = false
 
 	return model{
-		client:   client,
-		registry: reg,
-		perms:    perms,
-		viewport: vp,
-		input:    ta,
-		history:  []string{},
+		client:      client,
+		registry:    reg,
+		perms:       perms,
+		viewport:    vp,
+		input:       ta,
+		history:     []string{},
+		selectedSug: -1,
 	}
 }
 
-func askLLM(client *openai.Client, prompt string) tea.Cmd {
+func askLLM(client *openai.Client, userPrompt string) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.CreateChatCompletion(
 			context.Background(),
@@ -104,25 +118,12 @@ func askLLM(client *openai.Client, prompt string) tea.Cmd {
 				Model: "google/gemma-4-31B-it",
 				Messages: []openai.ChatCompletionMessage{
 					{
-						Role: openai.ChatMessageRoleSystem,
-						Content: `
-You are a coding CLI assistant.
-
-If user asks to create/edit/read files, ONLY return JSON:
-
-{"tool":"create_file","path":"main.go","content":"package main"}
-{"tool":"write_file","path":"x.txt","content":"hello"}
-{"tool":"append_file","path":"log.txt","content":"line"}
-{"tool":"read_file","path":"main.go"}
-{"tool":"mkdir","path":"internal/api"}
-
-No markdown. No explanation.
-Otherwise answer normally.
-`,
+						Role:    openai.ChatMessageRoleSystem,
+						Content: prompt.SystemPrompt,
 					},
 					{
 						Role:    openai.ChatMessageRoleUser,
-						Content: prompt,
+						Content: userPrompt,
 					},
 				},
 			},
@@ -152,6 +153,24 @@ func (m *model) pushOutput(text string) {
 	m.viewport.GotoBottom()
 }
 
+func (m *model) resizeView() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+
+	headerHeight := 2
+	inputHeight := 5
+	statusHeight := 1
+	padding := 4
+
+	suggestionsHeight := len(m.suggestions)
+
+	m.viewport.Width = m.width - 4
+	m.viewport.Height = m.height - headerHeight - inputHeight - statusHeight - padding - suggestionsHeight
+
+	m.input.SetWidth(m.width - 6)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -160,20 +179,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.resizeView()
 
-		headerHeight := 2
-		inputHeight := 5
-		statusHeight := 1
-		padding := 4
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+			if len(m.suggestions) > 0 {
+				statusLine := m.height - 1
+				footerTop := statusLine - 5
+				suggestionsTop := footerTop - len(m.suggestions)
 
-		m.viewport.Width = msg.Width - 4
-		m.viewport.Height = msg.Height - headerHeight - inputHeight - statusHeight - padding
-
-		m.input.SetWidth(msg.Width - 6)
+				if msg.Y >= suggestionsTop && msg.Y < footerTop {
+					m.selectedSug = msg.Y - suggestionsTop
+					if m.selectedSug >= 0 && m.selectedSug < len(m.suggestions) {
+						m.input.SetValue(m.suggestions[m.selectedSug])
+						m.input.CursorEnd()
+					}
+				}
+			}
+		}
 
 	case tea.KeyMsg:
-
-		// permission modal
 		if m.pending != nil {
 			switch msg.String() {
 			case "y":
@@ -201,21 +226,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			return m, tea.Quit
 
+		case "tab":
+			if len(m.suggestions) > 0 {
+				m.selectedSug++
+				if m.selectedSug >= len(m.suggestions) {
+					m.selectedSug = 0
+				}
+				if m.selectedSug >= 0 && m.selectedSug < len(m.suggestions) {
+					m.input.SetValue(m.suggestions[m.selectedSug])
+					m.input.CursorEnd()
+				}
+			}
+			return m, nil
+			
+		case "shift+tab":
+			if len(m.suggestions) > 0 {
+				if m.selectedSug == -1 {
+					m.selectedSug = len(m.suggestions) - 1
+				} else {
+					m.selectedSug--
+					if m.selectedSug < 0 {
+						m.selectedSug = len(m.suggestions) - 1
+					}
+				}
+				if m.selectedSug >= 0 && m.selectedSug < len(m.suggestions) {
+					m.input.SetValue(m.suggestions[m.selectedSug])
+					m.input.CursorEnd()
+				}
+			}
+			return m, nil
+
 		case "enter":
 			if m.loading {
 				return m, nil
 			}
 
-			prompt := strings.TrimSpace(m.input.Value())
-			if prompt == "" {
+			userPrompt := strings.TrimSpace(m.input.Value())
+			if userPrompt == "" {
 				return m, nil
 			}
 
-			m.pushOutput("You > " + prompt)
+			m.pushOutput("You > " + userPrompt)
 			m.input.SetValue("")
 			m.loading = true
+			
+			m.suggestions = nil
+			m.selectedSug = -1
+			m.resizeView()
 
-			return m, askLLM(m.client, prompt)
+			return m, askLLM(m.client, userPrompt)
 		}
 
 		m.viewport, _ = m.viewport.Update(msg)
@@ -231,6 +290,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		text := strings.TrimSpace(msg.text)
+		
+		m.suggestions = nil
+		m.selectedSug = -1
+		
+		if idx := strings.LastIndex(text, "SUGGESTIONS: "); idx != -1 {
+			sugJSON := text[idx+len("SUGGESTIONS: "):]
+			text = strings.TrimSpace(text[:idx])
+			if err := json.Unmarshal([]byte(sugJSON), &m.suggestions); err != nil {
+				// if failed to parse, at least we stripped it or maybe we can log safely
+			}
+		}
+		
+		m.resizeView()
 
 		if looksLikeJSON(text) {
 			var req tools.ToolRequest
@@ -283,7 +355,32 @@ func (m model) View() string {
 			m.viewport.View(),
 	)
 
+	var sugView string
+	if len(m.suggestions) > 0 {
+		var lines []string
+		for i, s := range m.suggestions {
+			prefix := "[ ] "
+			if i == m.selectedSug {
+				prefix = "[*] "
+				lines = append(lines, selectedSuggestionStyle.Render(prefix+s))
+			} else {
+				lines = append(lines, suggestionStyle.Render(prefix+s))
+			}
+		}
+		sugView = lipgloss.JoinVertical(lipgloss.Left, lines...)
+	}
+
 	footer := borderStyle.Render(m.input.View())
+
+	if sugView != "" {
+		return lipgloss.JoinVertical(
+			lipgloss.Left,
+			body,
+			sugView,
+			footer,
+			statusStyle.Render(status+"   (q to quit)"),
+		)
+	}
 
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -297,6 +394,7 @@ func main() {
 	p := tea.NewProgram(
 		initialModel(),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 
 	if _, err := p.Run(); err != nil {
