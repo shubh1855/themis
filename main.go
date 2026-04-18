@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -16,12 +18,102 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/dbx"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/llm"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/qdrant"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
 	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/worker"
 )
 
+// ── Styles for dashboard ────────────────────────────────────────────────
+
+var (
+	// Gradient-esque brand colours
+	brandPrimary   = lipgloss.Color("205") // hot pink
+	brandSecondary = lipgloss.Color("141") // lavender
+	brandAccent    = lipgloss.Color("214") // amber
+	brandDim       = lipgloss.Color("241")
+	brandSuccess   = lipgloss.Color("40")
+	brandDanger    = lipgloss.Color("196")
+
+	dashBorder = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(brandSecondary).
+			Padding(1, 2)
+
+	dashTitle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(brandPrimary).
+			MarginBottom(1)
+
+	dashSubtitle = lipgloss.NewStyle().
+			Foreground(brandSecondary).
+			Italic(true)
+
+	dashItemNormal = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			PaddingLeft(2)
+
+	dashItemSelected = lipgloss.NewStyle().
+				Foreground(brandPrimary).
+				Bold(true).
+				PaddingLeft(1)
+
+	dashSectionTitle = lipgloss.NewStyle().
+				Foreground(brandAccent).
+				Bold(true).
+				MarginTop(1)
+
+	dashHint = lipgloss.NewStyle().
+			Foreground(brandDim).
+			Italic(true).
+			MarginTop(1)
+
+	taskTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("220"))
+
+	taskBarDone = lipgloss.NewStyle().
+			Foreground(brandSuccess)
+
+	taskBarPending = lipgloss.NewStyle().
+			Foreground(brandDim)
+
+	taskBarFailed = lipgloss.NewStyle().
+			Foreground(brandDanger).
+			Bold(true)
+
+	logoArt = `
+  ████████╗██╗  ██╗███████╗███╗   ███╗██╗███████╗
+  ╚══██╔══╝██║  ██║██╔════╝████╗ ████║██║██╔════╝
+     ██║   ███████║█████╗  ██╔████╔██║██║███████╗
+     ██║   ██╔══██║██╔══╝  ██║╚██╔╝██║██║╚════██║
+     ██║   ██║  ██║███████╗██║ ╚═╝ ██║██║███████║
+     ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝╚═╝╚══════╝`
+)
+
+// ── Dashboard list items ────────────────────────────────────────────────
+
+type dashItem struct {
+	kind  string // "project" or "chat" or "action"
+	label string
+	desc  string
+	id    int
+}
+
+// ── View modes ──────────────────────────────────────────────────────────
+
+type ViewMode int
+
+const (
+	ViewDashboard ViewMode = iota
+	ViewChat
+	ViewTasks
+)
+
+// ── Review types (existing) ─────────────────────────────────────────────
 
 type reviewOpt int
 
@@ -41,8 +133,24 @@ var reviewStyles = []lipgloss.Style{
 	ui.ReviewAcceptStyle, ui.ReviewRejectStyle, ui.ReviewNeutralStyle,
 }
 
+// ── Model ───────────────────────────────────────────────────────────────
 
 type model struct {
+	// ── View routing ──
+	viewMode ViewMode
+
+	// ── Persistence ──
+	db      *dbx.DB
+	qdrant  *qdrant.Manager
+	workers *worker.Pool
+
+	// ── Dashboard state ──
+	dashItems    []dashItem
+	dashCursor   int
+	dashInput    textarea.Model   // for "new project" name entry
+	dashCreating bool             // true when typing a new project name
+
+	// ── Agent / Chat state (existing Themis logic) ──
 	client   *openai.Client
 	registry *tools.Registry
 	perms    *tools.PermissionManager
@@ -64,8 +172,8 @@ type model struct {
 	activeAgent llm.AgentID
 	thinkIdx    int
 
-	taskGraph      *ui.TaskGraph
-	activeTaskID   string
+	taskGraph    *ui.TaskGraph
+	activeTaskID string
 
 	ptyMaster    *os.File
 	ptyCmd       *exec.Cmd
@@ -78,23 +186,119 @@ type model struct {
 	quit          bool
 }
 
+// ── DB init message ─────────────────────────────────────────────────────
+
+type dbReadyMsg struct {
+	db   *dbx.DB
+	err  error
+	items []dashItem
+}
+
+func initDB() tea.Msg {
+	home, _ := os.UserHomeDir()
+	dbPath := filepath.Join(home, ".local", "share", "themis", "data.db")
+	_ = os.MkdirAll(filepath.Dir(dbPath), 0755)
+
+	db, err := dbx.Open(dbPath)
+	if err != nil {
+		return dbReadyMsg{err: err}
+	}
+
+	ctx := context.Background()
+	if e := db.InitSettings(ctx); e != nil {
+		return dbReadyMsg{err: e}
+	}
+	if e := db.InitProjects(ctx); e != nil {
+		return dbReadyMsg{err: e}
+	}
+
+	items := buildDashItems(db)
+	return dbReadyMsg{db: db, items: items}
+}
+
+// ── Qdrant init message ─────────────────────────────────────────────────
+
+type qdrantReadyMsg struct {
+	err error
+}
+
+func startQdrant(mgr *qdrant.Manager) tea.Cmd {
+	return func() tea.Msg {
+		err := mgr.EnsureRunning()
+		return qdrantReadyMsg{err: err}
+	}
+}
+
+func buildDashItems(db *dbx.DB) []dashItem {
+	var items []dashItem
+
+	// existing projects
+	projects, _ := db.ListProjects(context.Background())
+	for _, p := range projects {
+		items = append(items, dashItem{
+			kind:  "project",
+			label: p.Name,
+			desc:  p.Path + "  (" + p.UpdatedAt + ")",
+			id:    p.ID,
+		})
+	}
+
+	// recent chats (without a project scope)
+	chats, _ := db.RecentChats(context.Background())
+	for _, c := range chats {
+		items = append(items, dashItem{
+			kind:  "chat",
+			label: c.Title,
+			desc:  c.UpdatedAt,
+			id:    c.ID,
+		})
+	}
+
+	// permanent actions at the bottom
+	items = append(items,
+		dashItem{kind: "action", label: "＋  New Project", desc: "Create a new project workspace"},
+		dashItem{kind: "action", label: "＋  New Chat", desc: "Start a standalone chat session"},
+	)
+
+	return items
+}
+
+// ── initialModel ────────────────────────────────────────────────────────
+
 func initialModel() model {
 	wd, _ := os.Getwd()
 	fs := tools.NewFS(wd)
 
 	sp := spinner.New()
-	sp.Spinner = spinner.Dot
+	sp.Spinner = spinner.MiniDot
 	sp.Style = ui.SpinnerStyle
 
 	vp := viewport.New(80, 20)
 	ta := textarea.New()
-	ta.Placeholder = "Ask something..."
+	ta.Placeholder = "Ask Themis anything..."
 	ta.Focus()
 	ta.CharLimit = 0
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 
+	dashTA := textarea.New()
+	dashTA.Placeholder = "Project name..."
+	dashTA.CharLimit = 100
+	dashTA.SetHeight(1)
+	dashTA.ShowLineNumbers = false
+
 	return model{
+		viewMode: ViewDashboard,
+		workers:  worker.NewPool(),
+		qdrant:   qdrant.New(),
+
+		dashItems:  []dashItem{
+			{kind: "action", label: "＋  New Project", desc: "Create a new project workspace"},
+			{kind: "action", label: "＋  New Chat", desc: "Start a standalone chat session"},
+		},
+		dashCursor: 0,
+		dashInput:  dashTA,
+
 		client:      llm.NewClient(os.Getenv("INFERX_API_KEY")),
 		registry:    tools.NewRegistry(fs),
 		perms:       tools.NewPermissionManager(),
@@ -111,9 +315,15 @@ func initialModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick)
+	return tea.Batch(
+		textarea.Blink,
+		m.spinner.Tick,
+		initDB,
+		startQdrant(m.qdrant),
+	)
 }
 
+// ── Helpers (existing) ──────────────────────────────────────────────────
 
 func extractToolRequests(text string) []tools.ToolRequest {
 	var reqs []tools.ToolRequest
@@ -175,7 +385,6 @@ func (m *model) resizeView() {
 	m.help.Width = m.width
 }
 
-
 func (m *model) startThinkBlock(agent llm.AgentID) {
 	badge := ui.AgentStyle(string(agent)).Render(
 		llm.AgentEmoji(agent) + " " + string(agent))
@@ -207,7 +416,6 @@ func truncate(s string, max int) string {
 	}
 	return s[:max] + "…"
 }
-
 
 func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	master, readCmd, err := apptty.Start(cmd)
@@ -273,11 +481,25 @@ func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
 	return nil
 }
 
+// ── Update ──────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case dbReadyMsg:
+		if msg.err != nil {
+			// silently continue without db
+			return m, nil
+		}
+		m.db = msg.db
+		m.dashItems = msg.items
+		return m, nil
+
+	case qdrantReadyMsg:
+		// Qdrant startup completed (success or failure) — just re-render
+		return m, nil
 
 	case spinner.TickMsg:
 		if m.loading || m.running {
@@ -291,21 +513,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 	case tea.MouseMsg:
-		switch msg.Button {
-		case tea.MouseButtonWheelUp:
-			m.viewport.LineUp(3)
-			return m, nil
-		case tea.MouseButtonWheelDown:
-			m.viewport.LineDown(3)
-			return m, nil
-		case tea.MouseButtonLeft:
-			if (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease) &&
-				len(m.suggestions) > 0 {
-				sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
-				if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
-					m.selectedSug = idx
-					m.input.SetValue(m.suggestions[idx])
-					m.input.CursorEnd()
+		if m.viewMode == ViewChat {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.viewport.LineUp(3)
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				m.viewport.LineDown(3)
+				return m, nil
+			case tea.MouseButtonLeft:
+				if (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease) &&
+					len(m.suggestions) > 0 {
+					sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
+					if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
+						m.selectedSug = idx
+						m.input.SetValue(m.suggestions[idx])
+						m.input.CursorEnd()
+					}
 				}
 			}
 		}
@@ -425,7 +649,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pushAgentOutput(msg.Agent, "Error: "+msg.Err.Error())
 
+	case worker.ProgressMsg:
+		// background worker updates, re-render tasks view
+		return m, nil
+
 	case tea.KeyMsg:
+		// ── Global quit ──
+		if msg.String() == "ctrl+c" {
+			m.quit = true
+			return m, tea.Quit
+		}
+
+		// ── View switching ──
+		switch msg.String() {
+		case "ctrl+t":
+			m.viewMode = ViewTasks
+			return m, nil
+		}
+
+		// ── Dashboard mode ──
+		if m.viewMode == ViewDashboard {
+			return m.updateDashboard(msg)
+		}
+
+		// ── Tasks mode ──
+		if m.viewMode == ViewTasks {
+			if msg.String() == "esc" {
+				m.viewMode = ViewDashboard
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// ── Chat mode below ──
 		if m.running && m.ptyMaster != nil {
 			m.ptyMaster.Write(apptty.KeyToBytes(msg.String()))
 			return m, nil
@@ -445,11 +701,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.confirmReview(m.review.selected)
 			case "y":
 				return m, m.confirmReview(optAccept)
-			case "n", "esc":
+			case "n":
 				return m, m.confirmReview(optReject)
 			case "a":
 				return m, m.confirmReview(optAcceptAll)
 			}
+			return m, nil
+		}
+
+		if msg.String() == "esc" {
+			m.viewMode = ViewDashboard
 			return m, nil
 		}
 
@@ -542,12 +803,283 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// ── Dashboard Update ────────────────────────────────────────────────────
+
+func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// If creating a new project name
+	if m.dashCreating {
+		switch msg.String() {
+		case "esc":
+			m.dashCreating = false
+			m.dashInput.SetValue("")
+			return m, nil
+		case "enter":
+			name := strings.TrimSpace(m.dashInput.Value())
+			if name != "" && m.db != nil {
+				wd, _ := os.Getwd()
+				_, _ = m.db.CreateProject(context.Background(), name, wd)
+				m.dashItems = buildDashItems(m.db)
+				m.dashCursor = 0
+			}
+			m.dashCreating = false
+			m.dashInput.SetValue("")
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.dashInput, cmd = m.dashInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if m.dashCursor > 0 {
+			m.dashCursor--
+		}
+	case "down", "j":
+		if m.dashCursor < len(m.dashItems)-1 {
+			m.dashCursor++
+		}
+	case "enter":
+		if m.dashCursor < len(m.dashItems) {
+			item := m.dashItems[m.dashCursor]
+			switch item.kind {
+			case "project":
+				// open project → switch to chat
+				if m.db != nil {
+					_ = m.db.TouchProject(context.Background(), item.id)
+				}
+				m.viewMode = ViewChat
+				m.input.Focus()
+				m.pushOutput(dashSubtitle.Render("📂 Opened project: " + item.label))
+			case "chat":
+				if m.db != nil {
+					_ = m.db.TouchChat(context.Background(), item.id)
+				}
+				m.viewMode = ViewChat
+				m.input.Focus()
+				m.pushOutput(dashSubtitle.Render("💬 Resumed chat: " + item.label))
+			case "action":
+				if strings.Contains(item.label, "New Project") {
+					m.dashCreating = true
+					m.dashInput.Focus()
+				} else if strings.Contains(item.label, "New Chat") {
+					m.viewMode = ViewChat
+					m.input.Focus()
+					m.pushOutput(dashSubtitle.Render("💬 New chat session started"))
+				}
+			}
+		}
+	case "n":
+		m.dashCreating = true
+		m.dashInput.Focus()
+	}
+
+	return m, nil
+}
+
+// ── View ────────────────────────────────────────────────────────────────
 
 func (m model) View() string {
 	if m.quit {
 		return ""
 	}
 
+	switch m.viewMode {
+	case ViewDashboard:
+		return m.renderDashboard()
+	case ViewTasks:
+		return m.renderTasks()
+	default:
+		return m.renderChat()
+	}
+}
+
+// ── Dashboard View ──────────────────────────────────────────────────────
+
+func (m model) renderDashboard() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	h := m.height
+	if h <= 0 {
+		h = 24
+	}
+
+	var sb strings.Builder
+
+	// Logo with gradient
+	logoStyle := lipgloss.NewStyle().
+		Foreground(brandPrimary).
+		Bold(true)
+	sb.WriteString(logoStyle.Render(logoArt))
+	sb.WriteString("\n")
+	sb.WriteString(dashSubtitle.Render("  Multi-Agent AI Coding Assistant  ⚡ Zeus 🦉 Athena 🔨 Hephaestus ☀️ Apollo 🪽 Hermes ⚔️ Ares"))
+	sb.WriteString("\n\n")
+
+	// Separator
+	sep := lipgloss.NewStyle().Foreground(brandDim).Render(strings.Repeat("─", min(w-8, 70)))
+	sb.WriteString("  " + sep + "\n\n")
+
+	// Items list
+	hasProjects := false
+	hasChats := false
+	for _, item := range m.dashItems {
+		if item.kind == "project" && !hasProjects {
+			sb.WriteString("  " + dashSectionTitle.Render("📂 PROJECTS") + "\n")
+			hasProjects = true
+		}
+		if item.kind == "chat" && !hasChats {
+			sb.WriteString("\n  " + dashSectionTitle.Render("💬 RECENT CHATS") + "\n")
+			hasChats = true
+		}
+		if item.kind == "action" && (hasProjects || hasChats) {
+			sb.WriteString("\n  " + sep + "\n")
+			hasProjects = false
+			hasChats = false
+		}
+	}
+
+	// Reset and render the actual items
+	sb.Reset()
+	sb.WriteString(logoStyle.Render(logoArt))
+	sb.WriteString("\n")
+	sb.WriteString(dashSubtitle.Render("  Multi-Agent AI Coding Assistant  ⚡ Zeus 🦉 Athena 🔨 Hephaestus ☀️ Apollo 🪽 Hermes ⚔️ Ares"))
+	sb.WriteString("\n\n")
+	sb.WriteString("  " + sep + "\n\n")
+
+	lastKind := ""
+	for i, item := range m.dashItems {
+		// Section headers
+		if item.kind != lastKind {
+			switch item.kind {
+			case "project":
+				sb.WriteString("  " + dashSectionTitle.Render("📂 PROJECTS") + "\n")
+			case "chat":
+				if lastKind != "" {
+					sb.WriteString("\n")
+				}
+				sb.WriteString("  " + dashSectionTitle.Render("💬 RECENT CHATS") + "\n")
+			case "action":
+				sb.WriteString("\n  " + sep + "\n")
+			}
+			lastKind = item.kind
+		}
+
+		cursor := "  "
+		style := dashItemNormal
+		if i == m.dashCursor {
+			cursor = "❯ "
+			style = dashItemSelected
+		}
+
+		label := style.Render(item.label)
+		desc := lipgloss.NewStyle().Foreground(brandDim).Render("  " + item.desc)
+		sb.WriteString(cursor + label + desc + "\n")
+	}
+
+	// Creating a new project?
+	if m.dashCreating {
+		sb.WriteString("\n")
+		inputBox := dashBorder.Copy().
+			BorderForeground(brandAccent).
+			Width(min(w-10, 60)).
+			Render(
+				dashSectionTitle.Render("Enter project name:") + "\n" +
+					m.dashInput.View(),
+			)
+		sb.WriteString("  " + inputBox + "\n")
+	}
+
+	// Qdrant status indicator
+	var qdrantBadge string
+	switch m.qdrant.GetStatus() {
+	case qdrant.StatusReady:
+		qdrantBadge = lipgloss.NewStyle().Foreground(brandSuccess).Bold(true).Render("● Qdrant")
+	case qdrant.StatusDownloading:
+		qdrantBadge = lipgloss.NewStyle().Foreground(brandAccent).Render("◌ Qdrant downloading...")
+	case qdrant.StatusStarting:
+		qdrantBadge = lipgloss.NewStyle().Foreground(brandAccent).Render("◌ Qdrant starting...")
+	case qdrant.StatusFailed:
+		errStr := ""
+		if e := m.qdrant.LastError(); e != nil {
+			errStr = " (" + truncate(e.Error(), 40) + ")"
+		}
+		qdrantBadge = lipgloss.NewStyle().Foreground(brandDanger).Bold(true).Render("✗ Qdrant" + errStr)
+	default:
+		qdrantBadge = lipgloss.NewStyle().Foreground(brandDim).Render("○ Qdrant")
+	}
+	sb.WriteString("  " + qdrantBadge + "\n\n")
+
+	// Status bar
+	activeCount := 0
+	m.workers.ForEach(func(_ string, _ *worker.Task) { activeCount++ })
+
+	statusParts := []string{
+		lipgloss.NewStyle().Foreground(brandDim).Render("↑↓/jk navigate"),
+		lipgloss.NewStyle().Foreground(brandDim).Render("enter select"),
+		lipgloss.NewStyle().Foreground(brandDim).Render("n new project"),
+		lipgloss.NewStyle().Foreground(brandDim).Render("ctrl+t tasks"),
+		lipgloss.NewStyle().Foreground(brandDim).Render("ctrl+c quit"),
+	}
+	if activeCount > 0 {
+		statusParts = append(statusParts,
+			lipgloss.NewStyle().Foreground(brandAccent).Bold(true).Render(
+				fmt.Sprintf("⚙ %d active task(s)", activeCount)))
+	}
+	sb.WriteString("  " + strings.Join(statusParts, "  │  "))
+
+	return lipgloss.NewStyle().Padding(1, 2).Render(sb.String())
+}
+
+// ── Tasks View ──────────────────────────────────────────────────────────
+
+func (m model) renderTasks() string {
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	var sb strings.Builder
+
+	title := taskTitleStyle.Render("⚙  Themis Task Manager")
+	sb.WriteString(title + "\n")
+	sb.WriteString(lipgloss.NewStyle().Foreground(brandDim).Render(strings.Repeat("─", min(w-8, 60))) + "\n\n")
+
+	count := 0
+	m.workers.ForEach(func(id string, t *worker.Task) {
+		// Progress bar
+		barWidth := 20
+		filled := int(t.Progress * float64(barWidth))
+		if filled > barWidth {
+			filled = barWidth
+		}
+		bar := taskBarDone.Render(strings.Repeat("█", filled)) +
+			taskBarPending.Render(strings.Repeat("░", barWidth-filled))
+
+		pct := fmt.Sprintf("%3d%%", int(t.Progress*100))
+		status := lipgloss.NewStyle().Foreground(brandSecondary).Render(t.Status)
+
+		sb.WriteString(fmt.Sprintf("  %s  %s  %s  %s\n", bar, pct, status, id))
+		count++
+	})
+
+	if count == 0 {
+		emptyStyle := lipgloss.NewStyle().Foreground(brandDim).Italic(true).PaddingLeft(2)
+		sb.WriteString(emptyStyle.Render("No active background tasks") + "\n")
+		sb.WriteString(emptyStyle.Render("Tasks appear here when agents run file indexing, embeddings, etc.") + "\n")
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(dashHint.Render("  [esc] back to dashboard  │  [ctrl+c] quit"))
+
+	return lipgloss.NewStyle().Padding(2, 3).Render(sb.String())
+}
+
+// ── Chat View (existing Themis UI) ──────────────────────────────────────
+
+func (m model) renderChat() string {
 	status := "Ready"
 	if m.loading {
 		agentBadge := ""
@@ -603,7 +1135,7 @@ func (m model) View() string {
 		footer = ui.BorderStyle.Render(m.input.View())
 	}
 
-	helpBar := ui.StatusStyle.Render(status + "   " + m.help.View(ui.Keys))
+	helpBar := ui.StatusStyle.Render(status + "  │  " + m.help.View(ui.Keys) + "  │  esc: dashboard  ctrl+t: tasks")
 
 	parts := []string{topRow}
 	if sugView != "" {
@@ -633,13 +1165,18 @@ func (m model) reviewFooter() string {
 	return ui.BorderStyle.Render(strings.Join(opts, " ") + "\n" + hint)
 }
 
+// ── Main ────────────────────────────────────────────────────────────────
+
 func main() {
+	m := initialModel()
 	p := tea.NewProgram(
-		initialModel(),
+		m,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
 	if _, err := p.Run(); err != nil {
 		fmt.Println("error:", err)
 	}
+	// Clean up Qdrant daemon on exit
+	m.qdrant.Stop()
 }
