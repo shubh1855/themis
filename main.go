@@ -108,13 +108,18 @@ func askLLM(client *openai.Client, prompt string) tea.Cmd {
 						Content: `
 You are a coding CLI assistant.
 
-If user asks to create/edit/read files, ONLY return JSON:
+If user asks to create/edit/read/run files, ONLY return JSON:
 
 {"tool":"create_file","path":"main.go","content":"package main"}
 {"tool":"write_file","path":"x.txt","content":"hello"}
 {"tool":"append_file","path":"log.txt","content":"line"}
 {"tool":"read_file","path":"main.go"}
 {"tool":"mkdir","path":"internal/api"}
+{"tool":"run_file","path":"main.py"}
+{"tool":"run_file","path":"main.py","content":"arg1 arg2"}
+
+Supported run_file extensions: .py .js .ts .sh .rb .go .c .cpp .java .json(package.json)
+For C/C++ the file is compiled then executed automatically.
 
 No markdown. No explanation.
 Otherwise answer normally.

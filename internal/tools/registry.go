@@ -62,6 +62,16 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 		}
 		return ok("directory created")
 
+	case "run_file":
+		out, err := r.FS.RunFile(req.Path, req.Content)
+		if err != nil {
+			if out != "" {
+				return ToolResult{Success: false, Output: out + "\n" + err.Error()}
+			}
+			return fail(err)
+		}
+		return ok(out)
+
 	default:
 		return fail(errors.New("unknown tool"))
 	}
