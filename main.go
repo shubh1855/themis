@@ -158,15 +158,15 @@ func (m *model) resizeView() {
 		return
 	}
 
-	headerHeight := 2
-	inputHeight := 5
-	statusHeight := 1
-	padding := 4
-
 	suggestionsHeight := len(m.suggestions)
+	
+	// status: 1
+	// footer: 5
+	// Body total height available
+	bodyTotalHeight := m.height - 1 - 5 - suggestionsHeight
 
 	m.viewport.Width = m.width - 4
-	m.viewport.Height = m.height - headerHeight - inputHeight - statusHeight - padding - suggestionsHeight
+	m.viewport.Height = bodyTotalHeight - 5
 
 	m.input.SetWidth(m.width - 6)
 }
@@ -182,7 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+		if (msg.Action == tea.MouseActionRelease || msg.Action == tea.MouseActionPress) && msg.Button == tea.MouseButtonLeft {
 			if len(m.suggestions) > 0 {
 				statusLine := m.height - 1
 				footerTop := statusLine - 5
@@ -340,19 +340,34 @@ func (m model) View() string {
 		status = "Thinking..."
 	}
 
+	bodyContent := lipgloss.NewStyle().
+		Height(m.viewport.Height).
+		MaxHeight(m.viewport.Height).
+		Render(m.viewport.View())
+
 	if m.pending != nil {
-		modal := warnStyle.Render("Permission Required") + "\n\n" +
+		modalText := warnStyle.Render("Permission Required") + "\n\n" +
 			fmt.Sprintf("Tool: %s\nPath: %s\n\n[y] allow once   [a] always   [n] deny",
 				m.pending.Tool,
 				m.pending.Path,
 			)
 
-		return borderStyle.Render(header+"\n\n"+modal) + "\n"
+		modalBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("214")).
+			Padding(1, 4).
+			Render(modalText)
+
+		bodyContent = lipgloss.Place(
+			m.viewport.Width, m.viewport.Height,
+			lipgloss.Center, lipgloss.Center,
+			modalBox,
+		)
 	}
 
 	body := borderStyle.Render(
 		header + "\n\n" +
-			m.viewport.View(),
+			bodyContent,
 	)
 
 	var sugView string
@@ -367,7 +382,11 @@ func (m model) View() string {
 				lines = append(lines, suggestionStyle.Render(prefix+s))
 			}
 		}
-		sugView = lipgloss.JoinVertical(lipgloss.Left, lines...)
+		
+		sugView = lipgloss.NewStyle().
+			Height(len(m.suggestions)).
+			MaxHeight(len(m.suggestions)).
+			Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 	}
 
 	footer := borderStyle.Render(m.input.View())
@@ -394,7 +413,7 @@ func main() {
 	p := tea.NewProgram(
 		initialModel(),
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		tea.WithMouseCellMotion(), // Or tea.WithMouseAllMotion() but cell motion captures mouse clicks cleanly
 	)
 
 	if _, err := p.Run(); err != nil {
