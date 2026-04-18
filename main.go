@@ -131,9 +131,18 @@ func extractToolRequests(text string) []tools.ToolRequest {
 	return reqs
 }
 
+func (m *model) renderContent() string {
+	w := m.viewport.Width
+	if w <= 0 {
+		w = 80
+	}
+	return ui.OutputStyle.Copy().Width(w).Render(
+		strings.Join(m.history, "\n\n"))
+}
+
 func (m *model) pushOutput(text string) {
 	m.history = append(m.history, text)
-	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
+	m.viewport.SetContent(m.renderContent())
 	m.viewport.GotoBottom()
 }
 
@@ -144,7 +153,7 @@ func (m *model) pushAgentOutput(agent llm.AgentID, text string) {
 }
 
 func (m *model) updateViewport() {
-	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
+	m.viewport.SetContent(m.renderContent())
 	m.viewport.GotoBottom()
 }
 
