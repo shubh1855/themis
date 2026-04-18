@@ -2,11 +2,14 @@ package scraper
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 var (
@@ -15,44 +18,85 @@ var (
 	mu      sync.Mutex
 )
 
-// BrowserView opens a visible browser window, navigates to the URL, and extracts text.
+// hasDisplay reports whether a graphical display is available for a visible browser.
+func hasDisplay() bool {
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return true
+	default:
+		return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+	}
+}
+
+// launchBrowser downloads (if needed) and launches Chromium. Falls back to
+// headless mode if a visible window cannot be opened (e.g. no $DISPLAY, or
+// sandbox failures on Linux).
+func launchBrowser() (*rod.Browser, error) {
+	headless := !hasDisplay()
+
+	build := func(headless bool) *launcher.Launcher {
+		l := launcher.New().Headless(headless)
+		if runtime.GOOS == "linux" {
+			l = l.Set("no-sandbox").Set("disable-dev-shm-usage")
+		}
+		return l
+	}
+
+	url, err := build(headless).Launch()
+	if err != nil && !headless {
+		// headful failed — retry headless so at least scraping works.
+		url, err = build(true).Launch()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("launch chromium: %w (is a Chromium/Chrome binary available? rod will auto-download on first use)", err)
+	}
+
+	b := rod.New().ControlURL(url)
+	if err := b.Connect(); err != nil {
+		return nil, fmt.Errorf("connect to chromium: %w", err)
+	}
+	return b, nil
+}
+
+// BrowserView opens a browser window, navigates to the URL, and extracts text.
 func BrowserView(url string) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	if browser == nil {
-		u := launcher.New().
-			Headless(false). // Make it visible to the user
-			MustLaunch()
-		browser = rod.New().ControlURL(u).MustConnect()
-	}
-
-	var err error
-	if page == nil {
-		page = browser.MustPage(url)
-	} else {
-		err = page.Navigate(url)
+		b, err := launchBrowser()
 		if err != nil {
 			return "", err
 		}
+		browser = b
 	}
 
-	// Wait for the page to load
-	page.WaitLoad()
+	if page == nil {
+		p, err := browser.Page(proto.TargetCreateTarget{URL: url})
+		if err != nil {
+			return "", fmt.Errorf("open page: %w", err)
+		}
+		page = p
+	} else {
+		if err := page.Navigate(url); err != nil {
+			return "", fmt.Errorf("navigate: %w", err)
+		}
+	}
 
-	// Give JS frameworks a moment to render
+	if err := page.WaitLoad(); err != nil {
+		return "", fmt.Errorf("wait load: %w", err)
+	}
+
 	time.Sleep(2 * time.Second)
 
 	body, err := page.Element("body")
 	if err != nil {
 		return "Page loaded, but could not read body text.", nil
 	}
-	
 	text, err := body.Text()
 	if err != nil {
 		return "Page loaded, but error reading text.", nil
 	}
-
 	if len(text) > 4000 {
 		text = text[:4000] + "\n...(truncated)"
 	}
@@ -72,16 +116,29 @@ func BrowserRunJS(script string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%v", res.Value), nil
+	if res == nil {
+		return "", nil
+	}
+	if res.UnserializableValue != "" {
+		return string(res.UnserializableValue), nil
+	}
+	if res.Value.Nil() {
+		return "undefined", nil
+	}
+	return res.Value.String(), nil
 }
 
-// BrowserClose closes the current visible browser instance.
+// BrowserClose closes the current browser instance.
 func BrowserClose() string {
 	mu.Lock()
 	defer mu.Unlock()
 
 	if browser != nil {
-		browser.MustClose()
+		if err := browser.Close(); err != nil {
+			browser = nil
+			page = nil
+			return "browser close error: " + err.Error()
+		}
 		browser = nil
 		page = nil
 		return "browser closed"
