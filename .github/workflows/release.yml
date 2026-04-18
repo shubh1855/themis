@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ''
+          - goos: linux
+            goarch: arm64
+            ext: ''
+          - goos: darwin
+            goarch: amd64
+            ext: ''
+          - goos: darwin
+            goarch: arm64
+            ext: ''
+          - goos: windows
+            goarch: amd64
+            ext: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          name="themis-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${name}" .
+          cd dist
+          if [ "${GOOS}" = "windows" ]; then
+            zip "${name%.exe}.zip" "${name}"
+            sha256sum "${name%.exe}.zip" > "${name%.exe}.zip.sha256"
+          else
+            tar -czf "${name}.tar.gz" "${name}"
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: themis-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/*.sha256
