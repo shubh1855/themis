@@ -106,6 +106,15 @@ func (r *Router) registerBuiltins() {
 	r.Register("git_checkout", HandleGitCheckout)
 	r.Register("git_commit", HandleGitCommit)
 	r.Register("git_clone", HandleGitClone)
+	r.Register("git_add", HandleGitAdd)
+	r.Register("git_push", HandleGitPush)
+	r.Register("git_create_pr", HandleGitCreatePR)
+	r.Register("git_checkout_new_branch", HandleGitCheckoutNewBranch)
+
+	// GitHub auth tools
+	r.Register("github_login", HandleGitHubLogin)
+	r.Register("github_logout", HandleGitHubLogout)
+	r.Register("github_status", HandleGitHubStatus)
 
 	r.Register("run_tests", HandleRunTests)
 	r.Register("run_linter", HandleRunLinter)
