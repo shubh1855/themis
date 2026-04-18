@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ── Task status ──────────────────────────────────────────────────────────────
 
 type TaskStatus int
 
@@ -49,7 +48,6 @@ func (s TaskStatus) Style() lipgloss.Style {
 	}
 }
 
-// ── Task node ────────────────────────────────────────────────────────────────
 
 type TaskNode struct {
 	ID       string
@@ -57,10 +55,9 @@ type TaskNode struct {
 	Label    string
 	Status   TaskStatus
 	Children []*TaskNode
-	ToolCalls []string // brief summaries of tool invocations
+	ToolCalls []string
 }
 
-// ── Task graph ───────────────────────────────────────────────────────────────
 
 type TaskGraph struct {
 	mu    sync.Mutex
@@ -78,7 +75,6 @@ func (g *TaskGraph) nextID() string {
 	return fmt.Sprintf("T%d", g.seq)
 }
 
-// AddRoot sets the top-level task (user request).
 func (g *TaskGraph) AddRoot(agent, label string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -88,7 +84,6 @@ func (g *TaskGraph) AddRoot(agent, label string) string {
 	return id
 }
 
-// AddChild adds a subtask under the given parent.
 func (g *TaskGraph) AddChild(parentID, agent, label string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -103,7 +98,6 @@ func (g *TaskGraph) AddChild(parentID, agent, label string) string {
 	return id
 }
 
-// SetStatus updates the status of a task.
 func (g *TaskGraph) SetStatus(id string, status TaskStatus) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -112,7 +106,6 @@ func (g *TaskGraph) SetStatus(id string, status TaskStatus) {
 	}
 }
 
-// AddToolCall logs a tool invocation on a task.
 func (g *TaskGraph) AddToolCall(id, summary string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -121,11 +114,9 @@ func (g *TaskGraph) AddToolCall(id, summary string) {
 	}
 }
 
-// FindByAgent returns the latest running task for an agent.
 func (g *TaskGraph) FindByAgent(agent string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// Walk nodes in reverse order to find latest running task for an agent
 	var latest string
 	for id, n := range g.nodes {
 		if n.Agent == agent && n.Status == TaskRunning {
@@ -135,7 +126,6 @@ func (g *TaskGraph) FindByAgent(agent string) string {
 	return latest
 }
 
-// Stats returns (total, done, failed, running).
 func (g *TaskGraph) Stats() (int, int, int, int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -154,7 +144,6 @@ func (g *TaskGraph) Stats() (int, int, int, int) {
 	return total, done, failed, running
 }
 
-// ── Rendering ────────────────────────────────────────────────────────────────
 
 var (
 	panelBorder = lipgloss.NewStyle().
@@ -174,7 +163,6 @@ var (
 			Italic(true)
 )
 
-// Render draws the task graph panel at the given width/height.
 func (g *TaskGraph) Render(width, height int) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -188,7 +176,6 @@ func (g *TaskGraph) Render(width, height int) string {
 	var sb strings.Builder
 	sb.WriteString(panelTitle.Render("📋 Task Graph") + "\n")
 
-	// Stats bar
 	total, done, failed, running := 0, 0, 0, 0
 	for _, n := range g.nodes {
 		total++
@@ -211,7 +198,6 @@ func (g *TaskGraph) Render(width, height int) string {
 	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render(statsLine) + "\n")
 	sb.WriteString(connectorStyle.Render("─────────") + "\n")
 
-	// Render tree
 	g.renderNode(&sb, g.Root, "", true, width-4, height-5)
 
 	content := sb.String()
@@ -224,7 +210,6 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 		return
 	}
 
-	// Connector
 	var connector string
 	if prefix == "" {
 		connector = ""
@@ -234,7 +219,6 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 		connector = prefix + "├─"
 	}
 
-	// Agent emoji mapping
 	agentEmoji := map[string]string{
 		"Zeus": "⚡", "Athena": "🦉", "Hephaestus": "🔨",
 		"Apollo": "☀️", "Hermes": "🪽", "Ares": "⚔️",
@@ -260,7 +244,6 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 	sb.WriteString(line + "\n")
 	remaining := maxLines - 1
 
-	// Tool calls (show last 2 max)
 	calls := node.ToolCalls
 	if len(calls) > 2 {
 		calls = calls[len(calls)-2:]
@@ -288,7 +271,6 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 		remaining--
 	}
 
-	// Children
 	for i, child := range node.Children {
 		if remaining <= 0 {
 			sb.WriteString(connectorStyle.Render(childPrefix) + "  …\n")

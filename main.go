@@ -22,7 +22,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
 )
 
-// ── review types ─────────────────────────────────────────────────────────────
 
 type reviewOpt int
 
@@ -42,7 +41,6 @@ var reviewStyles = []lipgloss.Style{
 	ui.ReviewAcceptStyle, ui.ReviewRejectStyle, ui.ReviewNeutralStyle,
 }
 
-// ── model ────────────────────────────────────────────────────────────────────
 
 type model struct {
 	client   *openai.Client
@@ -62,16 +60,13 @@ type model struct {
 	pendingQueue []tools.ToolRequest
 	review       *toolReview
 
-	// ReAct state
 	reactCh     <-chan tea.Msg
 	activeAgent llm.AgentID
-	thinkIdx    int // index in history for live thinking block (-1 = none)
+	thinkIdx    int
 
-	// Task graph
 	taskGraph      *ui.TaskGraph
-	activeTaskID   string // currently running task node ID
+	activeTaskID   string
 
-	// PTY state
 	ptyMaster    *os.File
 	ptyCmd       *exec.Cmd
 	ptyCleanup   func()
@@ -119,7 +114,6 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(textarea.Blink, m.spinner.Tick)
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func extractToolRequests(text string) []tools.ToolRequest {
 	var reqs []tools.ToolRequest
@@ -171,10 +165,9 @@ func (m *model) resizeView() {
 	if h < 1 {
 		h = 1
 	}
-	// 80% width for main panel, 20% for task graph
 	mainW := m.width * 80 / 100
 	if mainW < 40 {
-		mainW = m.width - 4 // fallback if terminal too narrow
+		mainW = m.width - 4
 	}
 	m.viewport.Width = mainW - 4
 	m.viewport.Height = h
@@ -182,7 +175,6 @@ func (m *model) resizeView() {
 	m.help.Width = m.width
 }
 
-// ── ReAct helpers ─────────────────────────────────────────────────────────────
 
 func (m *model) startThinkBlock(agent llm.AgentID) {
 	badge := ui.AgentStyle(string(agent)).Render(
@@ -195,7 +187,6 @@ func (m *model) startThinkBlock(agent llm.AgentID) {
 
 func (m *model) appendToThink(chunk string) {
 	if m.thinkIdx >= 0 && m.thinkIdx < len(m.history) {
-		// Strip ReAct markers for display
 		clean := chunk
 		clean = strings.ReplaceAll(clean, "THOUGHT:", "")
 		clean = strings.ReplaceAll(clean, "THOUGHT :", "")
@@ -217,7 +208,6 @@ func truncate(s string, max int) string {
 	return s[:max] + "…"
 }
 
-// ── queue / PTY (legacy) ─────────────────────────────────────────────────────
 
 func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	master, readCmd, err := apptty.Start(cmd)
@@ -283,7 +273,6 @@ func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
 	return nil
 }
 
-// ── Update ────────────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -321,7 +310,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	// ── PTY events ───────────────────────────────────────────────────────
 	case apptty.OutputMsg:
 		if m.runOutputIdx < len(m.history) {
 			m.history[m.runOutputIdx] += string(msg)
@@ -349,7 +337,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.drainQueue()
 
-	// ── ReAct: live thinking stream ──────────────────────────────────────
 	case llm.ThinkChunkMsg:
 		if m.thinkIdx < 0 {
 			m.startThinkBlock(msg.Agent)
@@ -358,26 +345,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendToThink(msg.Chunk)
 		return m, llm.WaitReact(m.reactCh)
 
-	// ── ReAct: agent calls a tool ────────────────────────────────────────
 	case llm.ToolCallMsg:
 		m.endThinkBlock()
 		badge := ui.AgentStyle(string(msg.Agent)).Render(llm.AgentEmoji(msg.Agent))
 		m.pushOutput(badge + " " + ui.ToolExecStyle.Render("🔧 "+msg.Tool) +
 			"  " + ui.StatusStyle.Render(truncate(msg.Display, 80)))
-		// Track tool call in task graph
 		if tid := m.activeTaskID; tid != "" {
 			m.taskGraph.AddToolCall(tid, msg.Tool+": "+truncate(msg.Display, 40))
 		}
 		return m, llm.WaitReact(m.reactCh)
 
-	// ── ReAct: tool result ───────────────────────────────────────────────
 	case llm.ToolResultMsg:
 		m.pushOutput(ui.ObservationStyle.Render("📋 " + truncate(msg.Result, 500)))
-		// Start a new think block for the next step
 		m.startThinkBlock(msg.Agent)
 		return m, llm.WaitReact(m.reactCh)
 
-	// ── ReAct: agent delegates ───────────────────────────────────────────
 	case llm.ReactDelegateMsg:
 		m.endThinkBlock()
 		m.pushAgentOutput(msg.From,
@@ -385,7 +367,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				llm.AgentEmoji(msg.Target), string(msg.Target))))
 		m.pushOutput(ui.ThinkStyle.Render("  task: " + msg.Task))
 
-		// Mark parent task done, add child task
 		if m.activeTaskID != "" {
 			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskDone)
 		}
@@ -397,19 +378,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.taskGraph.SetStatus(childID, ui.TaskRunning)
 		m.activeTaskID = childID
 
-		// Start sub-agent ReAct loop
 		m.activeAgent = msg.Target
 		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, m.executor)
 		m.reactCh = ch
 		return m, tea.Batch(reactCmd, m.spinner.Tick)
 
-	// ── ReAct: final answer ──────────────────────────────────────────────
 	case llm.ReactAnswerMsg:
 		m.endThinkBlock()
 		m.loading = false
 		m.reactCh = nil
 
-		// Mark task as done
 		if m.activeTaskID != "" {
 			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskDone)
 		}
@@ -424,7 +402,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resizeView()
 
-		// Check for tool calls in the answer (backward compat)
 		if reqs := extractToolRequests(text); len(reqs) > 0 {
 			m.pushAgentOutput(msg.Agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
 			m.pendingQueue = reqs
@@ -434,7 +411,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(text))
 		}
 
-	// ── ReAct: done ──────────────────────────────────────────────────────
 	case llm.ReactDoneMsg:
 		m.endThinkBlock()
 		m.loading = false
@@ -449,7 +425,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pushAgentOutput(msg.Agent, "Error: "+msg.Err.Error())
 
-	// ── Key events ───────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		if m.running && m.ptyMaster != nil {
 			m.ptyMaster.Write(apptty.KeyToBytes(msg.String()))
@@ -535,7 +510,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// ── Submit ────────────────────────────────────────────────────────
 		if key.Matches(msg, ui.Keys.Submit) {
 			if m.loading {
 				return m, nil
@@ -552,12 +526,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectedSug = -1
 			m.resizeView()
 
-			// Reset task graph for new request
 			m.taskGraph = ui.NewTaskGraph()
 			rootID := m.taskGraph.AddRoot("Zeus", truncate(userPrompt, 50))
 			m.activeTaskID = rootID
 
-			// Start ReAct loop with Zeus
 			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, userPrompt, "", m.executor)
 			m.reactCh = ch
 			return m, tea.Batch(reactCmd, m.spinner.Tick)
@@ -570,7 +542,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// ── View ──────────────────────────────────────────────────────────────────────
 
 func (m model) View() string {
 	if m.quit {
@@ -589,7 +560,6 @@ func (m model) View() string {
 		status = m.spinner.View() + " Running..."
 	}
 
-	// ── Calculate panel widths ──────────────────────────────────────────
 	mainW := m.width * 80 / 100
 	graphW := m.width - mainW
 	if mainW < 40 {
@@ -597,7 +567,6 @@ func (m model) View() string {
 		graphW = 0
 	}
 
-	// ── Left panel: chat viewport ───────────────────────────────────────
 	bodyContent := lipgloss.NewStyle().
 		Height(m.viewport.Height).
 		MaxHeight(m.viewport.Height).
@@ -605,17 +574,15 @@ func (m model) View() string {
 	leftPanel := ui.BorderStyle.Copy().Width(mainW - 2).Render(
 		ui.TitleStyle.Render("Themis") + "\n\n" + bodyContent)
 
-	// ── Right panel: task graph ─────────────────────────────────────────
 	var topRow string
 	if graphW > 8 {
-		graphH := m.viewport.Height + 4 // match left panel height
+		graphH := m.viewport.Height + 4
 		rightPanel := m.taskGraph.Render(graphW, graphH)
 		topRow = lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 	} else {
 		topRow = leftPanel
 	}
 
-	// ── Suggestions ─────────────────────────────────────────────────────
 	var sugView string
 	if len(m.suggestions) > 0 {
 		lines := make([]string, len(m.suggestions))
@@ -629,7 +596,6 @@ func (m model) View() string {
 		sugView = lipgloss.JoinVertical(lipgloss.Left, lines...)
 	}
 
-	// ── Footer ──────────────────────────────────────────────────────────
 	var footer string
 	if m.review != nil {
 		footer = m.reviewFooter()

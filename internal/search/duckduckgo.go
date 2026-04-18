@@ -12,20 +12,16 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
 )
 
-// DuckDuckGo implements the Provider interface using DuckDuckGo HTML search.
 type DuckDuckGo struct {
 	client *httpx.Client
 }
 
-// NewDuckDuckGo creates a new DuckDuckGo search provider.
 func NewDuckDuckGo(client *httpx.Client) *DuckDuckGo {
 	return &DuckDuckGo{client: client}
 }
 
-// Name returns the provider name.
 func (d *DuckDuckGo) Name() string { return "duckduckgo" }
 
-// Search queries DuckDuckGo's HTML interface and parses results.
 func (d *DuckDuckGo) Search(ctx context.Context, query string, limit int) ([]models.SearchResult, error) {
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
 
@@ -53,7 +49,6 @@ func (d *DuckDuckGo) Search(ctx context.Context, query string, limit int) ([]mod
 	return parseDDGResults(string(body), limit), nil
 }
 
-// ParseDuckDuckGoHTML parses DuckDuckGo HTML search results from a reader.
 func ParseDuckDuckGoHTML(body io.Reader, limit int) ([]models.SearchResult, error) {
 	data, err := io.ReadAll(io.LimitReader(body, httpx.MaxBodySize))
 	if err != nil {
@@ -65,24 +60,19 @@ func ParseDuckDuckGoHTML(body io.Reader, limit int) ([]models.SearchResult, erro
 func parseDDGResults(html string, limit int) []models.SearchResult {
 	var results []models.SearchResult
 
-	// Strategy 1: Split on result__a class (standard DDG HTML layout)
 	parts := strings.Split(html, "result__a")
 	if len(parts) <= 1 {
-		// Strategy 2: Try result-link
 		parts = strings.Split(html, "result-link")
 	}
 	if len(parts) <= 1 {
-		// Strategy 3: generic href extraction
 		return extractHrefResults(html, limit)
 	}
 
 	for i := 1; i < len(parts) && len(results) < limit; i++ {
 		part := parts[i]
 
-		// Extract href - can appear before or after the class marker
 		href := extractHref(part)
 		if href == "" {
-			// Try looking backward in the previous part for the href
 			if i > 0 {
 				prevTail := parts[i-1]
 				if len(prevTail) > 200 {
@@ -96,22 +86,18 @@ func parseDDGResults(html string, limit int) []models.SearchResult {
 			continue
 		}
 
-		// Decode DDG redirect URLs
 		href = decodeDDGURL(href)
 
-		// Skip non-http results
 		if !strings.HasPrefix(href, "http") {
 			continue
 		}
 
-		// Extract title (text between > and </a>)
 		title := extractBetween(part, ">", "</a>")
 		if title == "" {
 			title = extractBetween(part, ">", "</")
 		}
 		title = stripTags(title)
 
-		// Extract snippet
 		snippet := ""
 		if snipIdx := strings.Index(part, "result__snippet"); snipIdx >= 0 {
 			snippet = extractBetween(part[snipIdx:], ">", "</")
@@ -131,7 +117,6 @@ func parseDDGResults(html string, limit int) []models.SearchResult {
 	return results
 }
 
-// extractHref finds the first href="..." in a string.
 func extractHref(s string) string {
 	idx := strings.Index(s, "href=\"")
 	if idx < 0 {
@@ -145,7 +130,6 @@ func extractHref(s string) string {
 	return s[:end]
 }
 
-// extractLastHref finds the last href="..." in a string.
 func extractLastHref(s string) string {
 	idx := strings.LastIndex(s, "href=\"")
 	if idx < 0 {
@@ -159,7 +143,6 @@ func extractLastHref(s string) string {
 	return s[:end]
 }
 
-// decodeDDGURL handles DuckDuckGo's redirect wrapper.
 func decodeDDGURL(href string) string {
 	if strings.Contains(href, "uddg=") {
 		if u, err := url.Parse(href); err == nil {
@@ -168,7 +151,6 @@ func decodeDDGURL(href string) string {
 			}
 		}
 	}
-	// Also handle //duckduckgo.com/l/?... redirects
 	if strings.Contains(href, "duckduckgo.com/l/") {
 		if u, err := url.Parse(href); err == nil {
 			if actual := u.Query().Get("uddg"); actual != "" {
@@ -179,7 +161,6 @@ func decodeDDGURL(href string) string {
 	return href
 }
 
-// extractHrefResults is a fallback that extracts all links from the page.
 func extractHrefResults(html string, limit int) []models.SearchResult {
 	var results []models.SearchResult
 	seen := make(map[string]bool)
@@ -200,7 +181,6 @@ func extractHrefResults(html string, limit int) []models.SearchResult {
 
 		href = decodeDDGURL(href)
 
-		// Skip DDG's own URLs
 		if strings.Contains(href, "duckduckgo.com") {
 			continue
 		}

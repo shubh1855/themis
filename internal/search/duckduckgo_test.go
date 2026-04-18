@@ -57,14 +57,12 @@ func TestDeduplicate(t *testing.T) {
 		}{r.url, r.title})
 	}
 
-	// Test with models.SearchResult
 	var modelResults []struct{ URL string }
 	for _, r := range results {
 		modelResults = append(modelResults, struct{ URL string }{r.url})
 	}
 
 	if len(modelResults) == len(results) {
-		// Basic sanity
 		t.Log("dedup test setup OK")
 	}
 }
@@ -82,7 +80,6 @@ func TestNormalizeURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// We test the normalization indirectly through Deduplicate
 			t.Log("normalize test:", tt.input, "->", tt.expected)
 		})
 	}

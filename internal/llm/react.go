@@ -12,15 +12,12 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// ── ReAct event types (all implement tea.Msg) ────────────────────────────────
 
-// ThinkChunkMsg streams partial thinking text to the UI.
 type ThinkChunkMsg struct {
 	Agent AgentID
 	Chunk string
 }
 
-// ToolCallMsg signals the agent is executing a tool.
 type ToolCallMsg struct {
 	Agent   AgentID
 	Tool    string
@@ -28,20 +25,17 @@ type ToolCallMsg struct {
 	Display string
 }
 
-// ToolResultMsg carries the result of a tool execution.
 type ToolResultMsg struct {
 	Agent  AgentID
 	Tool   string
 	Result string
 }
 
-// ReactAnswerMsg is the agent's final answer.
 type ReactAnswerMsg struct {
 	Agent AgentID
 	Text  string
 }
 
-// ReactDelegateMsg signals Zeus is delegating to a sub-agent.
 type ReactDelegateMsg struct {
 	From    AgentID
 	Target  AgentID
@@ -49,21 +43,17 @@ type ReactDelegateMsg struct {
 	Context string
 }
 
-// ReactDoneMsg signals the ReAct channel is closed.
 type ReactDoneMsg struct{}
 
-// ReactErrorMsg carries an error from the ReAct loop.
 type ReactErrorMsg struct {
 	Agent AgentID
 	Err   error
 }
 
-// ToolExecutor runs a tool and returns text output.
 type ToolExecutor func(tool string, args map[string]interface{}) (string, error)
 
 const maxReactSteps = 8
 
-// ── Agent tool access ────────────────────────────────────────────────────────
 
 var agentTools = map[AgentID][]string{
 	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
@@ -118,9 +108,7 @@ func reactSuffix(agent AgentID) string {
 	return sb.String()
 }
 
-// ── RunReact — the core loop ─────────────────────────────────────────────────
 
-// RunReact runs a ReAct loop in the calling goroutine, sending events to ch.
 func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx string, executor ToolExecutor, ch chan<- tea.Msg) {
 	defer close(ch)
 
@@ -145,7 +133,7 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 		}
 
 		thought, action, answer, deleg := parseReact(full)
-		_ = thought // already streamed
+		_ = thought
 
 		if deleg != nil {
 			ch <- ReactDelegateMsg{From: agent, Target: deleg.target, Task: deleg.task, Context: deleg.ctx}
@@ -175,7 +163,6 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 			continue
 		}
 
-		// No markers found — treat entire response as answer
 		ch <- ReactAnswerMsg{Agent: agent, Text: full}
 		return
 	}
@@ -183,7 +170,6 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 	ch <- ReactErrorMsg{Agent: agent, Err: fmt.Errorf("reached %d ReAct steps without answer", maxReactSteps)}
 }
 
-// ── streaming ────────────────────────────────────────────────────────────────
 
 func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, agent AgentID, ch chan<- tea.Msg) (string, error) {
 	stream, err := client.CreateChatCompletionStream(
@@ -191,7 +177,6 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 		openai.ChatCompletionRequest{Model: reactModel, Messages: messages},
 	)
 	if err != nil {
-		// Fallback to non-streaming
 		return nonStreamCall(client, messages, agent, ch)
 	}
 	defer stream.Close()
@@ -206,7 +191,7 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 		}
 		if err != nil {
 			if full.Len() > 0 {
-				break // use what we have
+				break
 			}
 			return "", fmt.Errorf("stream: %w", err)
 		}
@@ -246,7 +231,6 @@ func nonStreamCall(client *openai.Client, messages []openai.ChatCompletionMessag
 	return text, nil
 }
 
-// ── parsing ──────────────────────────────────────────────────────────────────
 
 type parsedAction struct {
 	tool string
@@ -294,7 +278,6 @@ func parseReact(text string) (thought string, action *parsedAction, answer strin
 			rest = strings.TrimSpace(rest)
 			act := parseToolJSON(rest)
 			if act != nil {
-				// Check for delegation
 				if act.tool == "delegate" {
 					agentName, _ := act.args["agent"].(string)
 					task, _ := act.args["task"].(string)
@@ -310,7 +293,6 @@ func parseReact(text string) (thought string, action *parsedAction, answer strin
 			continue
 		}
 
-		// Non-prefixed lines go to thought
 		if trimmed != "" {
 			thoughtBuf.WriteString(trimmed + "\n")
 		}
@@ -338,16 +320,13 @@ func parseToolJSON(s string) *parsedAction {
 	return &parsedAction{tool: tool, args: raw, raw: s}
 }
 
-// ── Public helpers ───────────────────────────────────────────────────────────
 
-// StartReact creates a channel, starts the loop, and returns the first Cmd.
 func StartReact(client *openai.Client, agent AgentID, prompt string, ctx string, executor ToolExecutor) (chan tea.Msg, tea.Cmd) {
 	ch := make(chan tea.Msg, 32)
 	go RunReact(client, agent, prompt, ctx, executor, ch)
 	return ch, WaitReact(ch)
 }
 
-// WaitReact returns a Cmd that reads the next event from a ReAct channel.
 func WaitReact(ch <-chan tea.Msg) tea.Cmd {
 	if ch == nil {
 		return nil

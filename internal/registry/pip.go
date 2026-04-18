@@ -13,22 +13,16 @@ import (
 const pypiURL = "https://pypi.org/pypi"
 const pypiSearchURL = "https://pypi.org/search"
 
-// Pip implements the Client interface for the PyPI registry.
 type Pip struct {
 	*BaseClient
 }
 
-// NewPip creates a PyPI registry client.
 func NewPip(base *BaseClient) *Pip {
 	return &Pip{BaseClient: base}
 }
 
-// Name returns the registry identifier.
 func (p *Pip) Name() string { return "pip" }
 
-// Search finds PyPI packages matching the query.
-// Note: PyPI doesn't have a public search API; we use the JSON API with a
-// name-based lookup approach, falling back to the search page.
 func (p *Pip) Search(query string, limit int) (*models.PackageSearchResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -41,7 +35,6 @@ func (p *Pip) Search(query string, limit int) (*models.PackageSearchResult, erro
 		}
 	}
 
-	// PyPI doesn't have a search API, but we can try a direct lookup
 	info, err := p.Lookup(query)
 	if err != nil {
 		return &models.PackageSearchResult{
@@ -63,7 +56,6 @@ func (p *Pip) Search(query string, limit int) (*models.PackageSearchResult, erro
 	return result, nil
 }
 
-// Lookup retrieves metadata for a specific PyPI package.
 func (p *Pip) Lookup(name string) (*models.PackageInfo, error) {
 	cacheKey := cache.RegistryKey("pip", name)
 	if cached, ok := p.Cache.Get(cacheKey); ok {
@@ -121,7 +113,6 @@ func splitKeywords(s string) []string {
 	for _, k := range []string{","} {
 		_ = k
 	}
-	// PyPI keywords are comma-separated
 	parts := make([]string, 0)
 	for _, part := range split(s) {
 		if part != "" {

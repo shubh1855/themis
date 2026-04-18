@@ -29,7 +29,7 @@ type ToolResult struct {
 
 type Registry struct {
 	FS     *FS
-	Memory map[string]string // shared KV store for store_memory / retrieve_memory
+	Memory map[string]string
 }
 
 func NewRegistry(fs *FS) *Registry {

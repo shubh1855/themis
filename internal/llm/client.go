@@ -6,7 +6,6 @@ import (
 	agents "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/prompt/agents"
 )
 
-// ── Agent definitions ────────────────────────────────────────────────────────
 
 type AgentID string
 
@@ -30,7 +29,6 @@ var agentPrompts = map[AgentID]string{
 	AgentAres:       agents.AresPrompt,
 }
 
-// AgentEmoji returns a visual badge for the agent.
 func AgentEmoji(id AgentID) string {
 	switch id {
 	case AgentZeus:
@@ -50,7 +48,6 @@ func AgentEmoji(id AgentID) string {
 	}
 }
 
-// NewClient creates a configured OpenAI-compatible client.
 func NewClient(apiKey string) *openai.Client {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = "https://litellm-proxy-93ef.onrender.com/v1"

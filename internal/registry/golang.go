@@ -13,21 +13,16 @@ import (
 const goProxyURL = "https://proxy.golang.org"
 const goPkgSearchURL = "https://pkg.go.dev/search"
 
-// GoLang implements the Client interface for the Go module proxy.
 type GoLang struct {
 	*BaseClient
 }
 
-// NewGoLang creates a Go module registry client.
 func NewGoLang(base *BaseClient) *GoLang {
 	return &GoLang{BaseClient: base}
 }
 
-// Name returns the registry identifier.
 func (g *GoLang) Name() string { return "go" }
 
-// Search finds Go packages matching the query.
-// Uses the Go proxy's search or falls back to pkg.go.dev.
 func (g *GoLang) Search(query string, limit int) (*models.PackageSearchResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -40,7 +35,6 @@ func (g *GoLang) Search(query string, limit int) (*models.PackageSearchResult, e
 		}
 	}
 
-	// Go proxy doesn't have a search API, try direct lookup
 	info, err := g.Lookup(query)
 	if err != nil {
 		return &models.PackageSearchResult{
@@ -62,7 +56,6 @@ func (g *GoLang) Search(query string, limit int) (*models.PackageSearchResult, e
 	return result, nil
 }
 
-// Lookup retrieves metadata for a specific Go module.
 func (g *GoLang) Lookup(name string) (*models.PackageInfo, error) {
 	cacheKey := cache.RegistryKey("go", name)
 	if cached, ok := g.Cache.Get(cacheKey); ok {
@@ -71,7 +64,6 @@ func (g *GoLang) Lookup(name string) (*models.PackageInfo, error) {
 		}
 	}
 
-	// Get latest version from proxy
 	latestURL := fmt.Sprintf("%s/%s/@latest", goProxyURL, url.PathEscape(name))
 	body, err := g.HTTP.GetBody(context.Background(), latestURL)
 	if err != nil {
