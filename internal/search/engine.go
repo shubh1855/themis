@@ -1,4 +1,3 @@
-// Package search implements a meta search engine with pluggable providers.
 package search
 
 import (
@@ -9,13 +8,11 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
 )
 
-// Engine coordinates search across providers with caching and deduplication.
 type Engine struct {
 	providers []Provider
 	cache     *cache.Memory
 }
 
-// NewEngine creates a search engine with the given providers and cache.
 func NewEngine(providers []Provider, c *cache.Memory) *Engine {
 	return &Engine{
 		providers: providers,
@@ -23,7 +20,6 @@ func NewEngine(providers []Provider, c *cache.Memory) *Engine {
 	}
 }
 
-// Search queries all providers and returns merged, deduplicated, ranked results.
 func (e *Engine) Search(ctx context.Context, query string, limit int) (*models.SearchResponse, error) {
 	if query == "" {
 		return nil, fmt.Errorf("search: empty query")
@@ -32,7 +28,6 @@ func (e *Engine) Search(ctx context.Context, query string, limit int) (*models.S
 		limit = 10
 	}
 
-	// Check cache
 	cacheKey := cache.SearchKey("meta", query, limit)
 	if cached, ok := e.cache.Get(cacheKey); ok {
 		if resp, ok := cached.(*models.SearchResponse); ok {
@@ -40,12 +35,10 @@ func (e *Engine) Search(ctx context.Context, query string, limit int) (*models.S
 		}
 	}
 
-	// Query all providers
 	var allResults []models.SearchResult
 	for _, p := range e.providers {
 		results, err := p.Search(ctx, query, limit)
 		if err != nil {
-			// Log but don't fail; try other providers
 			continue
 		}
 		allResults = append(allResults, results...)
@@ -59,17 +52,14 @@ func (e *Engine) Search(ctx context.Context, query string, limit int) (*models.S
 		}, nil
 	}
 
-	// Dedupe, rank, normalize
 	deduped := Deduplicate(allResults)
 	ranked := Rank(deduped)
 	normalized := NormalizeResults(ranked)
 
-	// Trim to limit
 	if len(normalized) > limit {
 		normalized = normalized[:limit]
 	}
 
-	// Assign final ranks
 	for i := range normalized {
 		normalized[i].Rank = i + 1
 	}
@@ -80,7 +70,6 @@ func (e *Engine) Search(ctx context.Context, query string, limit int) (*models.S
 		Total:   len(normalized),
 	}
 
-	// Cache
 	e.cache.SetWithTTL(cacheKey, resp, cache.SearchTTL)
 
 	return resp, nil

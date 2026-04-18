@@ -145,5 +145,9 @@ FAILURE CONDITIONS:
 - vague tasks
 - no completion path
 
+MEMORY TOOLS (available when you need to preserve findings):
+{"tool":"store_memory","key":"tech_decision","content":"Using Fiber for the HTTP layer — fast, minimal, Go-idiomatic"}
+{"tool":"retrieve_memory","key":"tech_decision"}
+
 Return ONLY JSON.
 `

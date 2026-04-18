@@ -269,6 +269,17 @@ func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
 		m.pushOutput(ui.ReviewAcceptStyle.Render("✓ " + res.Output))
 		return m.drainQueue()
 	}
+
+	// Queue fully drained — send accumulated tool outputs back to the invoking agent.
+	if len(m.pendingToolResults) > 0 && m.toolCallAgent != "" {
+		results := m.pendingToolResults
+		agent := m.toolCallAgent
+		history := m.agentHistory
+		m.pendingToolResults = nil
+		m.loading = true
+		return llm.AskAgentWithResults(m.client, agent, results, history)
+	}
+
 	return nil
 }
 
@@ -278,6 +289,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+
+	case spinner.TickMsg:
+		if m.loading || m.running {
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -399,6 +416,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.drainQueue()
 		}
 
+		// If Athena returned a structured plan, queue ALL delegations — not just the first.
+		if agent == llm.AgentAthena {
+			if plan := llm.ParseAthenaPlan(text); plan != nil {
+				if text != "" {
+					m.pushAgentOutput(agent, text)
+				}
+				delegations := llm.DispatchPlanTasks(plan)
+				if len(delegations) > 0 {
+					m.pendingDelegations = delegations[1:]
+					m.loading = true
+					first := delegations[0]
+					return m, func() tea.Msg { return first }
+				}
+				return m, nil
+			}
+		}
+
+		// Agent is done (no more tool calls) — show its response.
+		m.toolCallAgent = ""
 		if text != "" {
 			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(text))
 		}
@@ -514,6 +550,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.loading = true
 			m.activeAgent = llm.AgentZeus
+			m.agentHistory = nil
 			m.suggestions = nil
 			m.selectedSug = -1
 			m.resizeView()

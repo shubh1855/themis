@@ -19,7 +19,6 @@ const (
 	ShellSh   ShellKind = "sh"
 )
 
-// DetectShell reads $SHELL and returns the shell kind + its binary path.
 func DetectShell() (ShellKind, string) {
 	shellPath := os.Getenv("SHELL")
 	if shellPath == "" {
@@ -38,9 +37,6 @@ func DetectShell() (ShellKind, string) {
 	}
 }
 
-// BuildRunCmd builds an *exec.Cmd ready for interactive execution via tea.ExecProcess.
-// For compiled languages (C, C++, Java) it compiles synchronously first.
-// cleanup must be called after the process exits to remove temp binaries.
 func (f *FS) BuildRunCmd(path, args string) (*exec.Cmd, func(), error) {
 	p, err := f.SafePath(path)
 	if err != nil {

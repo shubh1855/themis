@@ -1,4 +1,3 @@
-// Package security provides URL validation and SSRF protection for outbound requests.
 package security
 
 import (
@@ -8,14 +7,11 @@ import (
 	"strings"
 )
 
-// AllowedSchemes lists the URL schemes that are permitted for outbound requests.
 var AllowedSchemes = map[string]bool{
 	"http":  true,
 	"https": true,
 }
 
-// ValidateURL checks that a URL is well-formed and uses a permitted scheme.
-// Returns the parsed URL or an error describing the violation.
 func ValidateURL(rawURL string) (*url.URL, error) {
 	if strings.TrimSpace(rawURL) == "" {
 		return nil, fmt.Errorf("security: empty URL")
@@ -41,7 +37,6 @@ func ValidateURL(rawURL string) (*url.URL, error) {
 	return u, nil
 }
 
-// IsBlockedHost checks if a URL targets a localhost or private IP address.
 func IsBlockedHost(rawURL string) (bool, error) {
 	u, err := ValidateURL(rawURL)
 	if err != nil {
@@ -54,10 +49,8 @@ func IsBlockedHost(rawURL string) (bool, error) {
 		return true, fmt.Errorf("security: blocked private host %q", host)
 	}
 
-	// Resolve DNS and check IPs
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// DNS failures may indicate internal names; block them.
 		return true, fmt.Errorf("security: cannot resolve host %q: %w", host, err)
 	}
 
@@ -84,7 +77,6 @@ func isPrivateHostname(host string) bool {
 			return true
 		}
 	}
-	// .local, .internal, .localhost TLDs
 	for _, suffix := range []string{".local", ".internal", ".localhost"} {
 		if strings.HasSuffix(lower, suffix) {
 			return true

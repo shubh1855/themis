@@ -1,6 +1,5 @@
 package models
 
-// PackageInfo represents normalized metadata for a package from any ecosystem.
 type PackageInfo struct {
 	Name        string   `json:"name"`
 	Version     string   `json:"version"`
@@ -13,7 +12,6 @@ type PackageInfo struct {
 	Registry    string   `json:"registry"`
 }
 
-// PackageSearchResult holds results from a package search query.
 type PackageSearchResult struct {
 	Query    string        `json:"query"`
 	Registry string        `json:"registry"`

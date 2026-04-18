@@ -28,6 +28,9 @@ Supported patterns:
 {"tool":"edit_file","path":"main.go","old_string":"x","new_string":"y"}
 {"tool":"mkdir","path":"src/components"}
 {"tool":"run_file","path":"main.py"}
+{"tool":"store_memory","key":"api_url","content":"http://localhost:8080"}
+{"tool":"retrieve_memory","key":"api_url"}
+{"tool":"delegate_task","agent":"Apollo","content":"Research best Go HTTP library for this use case"}
 
 No prose when using tools.
 

@@ -4,7 +4,6 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 )
 
-// KeyMap defines all keybindings for the app.
 type KeyMap struct {
 	Submit      key.Binding
 	Quit        key.Binding
@@ -17,7 +16,6 @@ type KeyMap struct {
 	Deny        key.Binding
 }
 
-// Keys is the default keybinding set.
 var Keys = KeyMap{
 	Submit:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send")),
 	Quit:        key.NewBinding(key.WithKeys("ctrl+c", "q"), key.WithHelp("ctrl+c", "quit")),
@@ -30,12 +28,10 @@ var Keys = KeyMap{
 	Deny:        key.NewBinding(key.WithKeys("n", "esc"), key.WithHelp("n", "deny")),
 }
 
-// ShortHelp implements help.KeyMap — shown in the compact status bar.
 func (k KeyMap) ShortHelp() []key.Binding {
 	return []key.Binding{k.Submit, k.NextSug, k.Quit}
 }
 
-// FullHelp implements help.KeyMap — shown when user presses ?.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Submit, k.Quit},

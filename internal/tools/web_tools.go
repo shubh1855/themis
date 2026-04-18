@@ -15,7 +15,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/security"
 )
 
-// HandleWebSearch performs a web search via the search engine.
 func HandleWebSearch(ctx Context) models.ToolResponse {
 	query := models.ArgString(ctx.Req.Args, "query")
 	if query == "" {
@@ -30,7 +29,6 @@ func HandleWebSearch(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(results)
 }
 
-// HandleFetchURL fetches the readable text content of a URL.
 func HandleFetchURL(ctx Context) models.ToolResponse {
 	rawURL := models.ArgString(ctx.Req.Args, "url")
 	if rawURL == "" {
@@ -60,7 +58,6 @@ func HandleFetchURL(ctx Context) models.ToolResponse {
 	})
 }
 
-// HandleFetchJSON fetches a URL and returns parsed JSON.
 func HandleFetchJSON(ctx Context) models.ToolResponse {
 	rawURL := models.ArgString(ctx.Req.Args, "url")
 	if rawURL == "" {
@@ -85,7 +82,6 @@ func HandleFetchJSON(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(data)
 }
 
-// HandleDownloadFile downloads a file from a URL and saves it locally.
 func HandleDownloadFile(ctx Context) models.ToolResponse {
 	rawURL := models.ArgString(ctx.Req.Args, "url")
 	dest := models.ArgString(ctx.Req.Args, "path")
@@ -138,7 +134,6 @@ func HandleDownloadFile(ctx Context) models.ToolResponse {
 	})
 }
 
-// HandleScrapePage scrapes a page using CSS-like selectors.
 func HandleScrapePage(ctx Context) models.ToolResponse {
 	rawURL := models.ArgString(ctx.Req.Args, "url")
 	if rawURL == "" {
@@ -155,12 +150,10 @@ func HandleScrapePage(ctx Context) models.ToolResponse {
 		return models.ErrorResponsef("scrape_page: %v", err)
 	}
 
-	// Extract selectors if provided
 	selectorsRaw := models.ArgString(ctx.Req.Args, "selectors")
 	if selectorsRaw != "" {
 		var selectors []string
 		if uerr := json.Unmarshal([]byte(selectorsRaw), &selectors); uerr != nil {
-			// Try comma-separated fallback
 			for _, s := range strings.Split(selectorsRaw, ",") {
 				s = strings.TrimSpace(s)
 				if s != "" {
@@ -172,7 +165,6 @@ func HandleScrapePage(ctx Context) models.ToolResponse {
 		return models.SuccessResponse(results)
 	}
 
-	// Default: full page extraction
 	text := scraper.ExtractMainText(html)
 	meta := scraper.ExtractMetadata(html)
 

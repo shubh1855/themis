@@ -68,7 +68,6 @@ var (
 			PaddingLeft(1)
 )
 
-// AgentStyle returns the color style for a given agent name.
 func AgentStyle(name string) lipgloss.Style {
 	switch name {
 	case "Zeus":
