@@ -5,7 +5,6 @@ import (
 	"fmt"
 )
 
-// Tables returns a list of all table names in the database.
 func (d *DB) Tables(ctx context.Context) ([]string, error) {
 	rows, _, err := d.Query(ctx, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 	if err != nil {
@@ -20,7 +19,6 @@ func (d *DB) Tables(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// Schema returns the CREATE statement for a given table.
 func (d *DB) Schema(ctx context.Context, table string) (string, error) {
 	rows, _, err := d.Query(ctx, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table)
 	if err != nil {
@@ -35,7 +33,6 @@ func (d *DB) Schema(ctx context.Context, table string) (string, error) {
 	return "", fmt.Errorf("dbx: invalid schema for %q", table)
 }
 
-// TableInfo returns column info for a given table using PRAGMA table_info.
 func (d *DB) TableInfo(ctx context.Context, table string) ([]map[string]interface{}, error) {
 	rows, _, err := d.Query(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {

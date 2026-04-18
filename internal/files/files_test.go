@@ -157,12 +157,10 @@ func TestDeleteFile(t *testing.T) {
 func TestAtomicWrite(t *testing.T) {
 	m := testManager(t)
 
-	// Write should be atomic (no .tmp file left behind)
 	if err := m.WriteFile("atomic.txt", "content"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Check no temp file exists
 	root := m.Root
 	entries, _ := os.ReadDir(root)
 	for _, e := range entries {

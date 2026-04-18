@@ -8,7 +8,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tester"
 )
 
-// HandleRunTests runs the test suite for the project.
 func HandleRunTests(ctx Context) models.ToolResponse {
 	dir := models.ArgString(ctx.Req.Args, "dir")
 	if dir == "" {
@@ -28,7 +27,6 @@ func HandleRunTests(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleRunLinter runs a linter on the project.
 func HandleRunLinter(ctx Context) models.ToolResponse {
 	dir := models.ArgString(ctx.Req.Args, "dir")
 	if dir == "" {
@@ -49,7 +47,6 @@ func HandleRunLinter(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleCoverageReport generates a test coverage report.
 func HandleCoverageReport(ctx Context) models.ToolResponse {
 	dir := models.ArgString(ctx.Req.Args, "dir")
 	if dir == "" {
@@ -63,7 +60,6 @@ func HandleCoverageReport(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleBenchmarkCmd runs a benchmark command.
 func HandleBenchmarkCmd(ctx Context) models.ToolResponse {
 	dir := models.ArgString(ctx.Req.Args, "dir")
 	if dir == "" {

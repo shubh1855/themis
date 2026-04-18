@@ -4,7 +4,6 @@ import (
 	"strings"
 )
 
-// StripScriptsAndStyles removes <script> and <style> blocks from HTML.
 func StripScriptsAndStyles(html string) string {
 	html = removeBetweenTags(html, "script")
 	html = removeBetweenTags(html, "style")
@@ -12,7 +11,6 @@ func StripScriptsAndStyles(html string) string {
 	return html
 }
 
-// StripAllTags removes all HTML tags, leaving only text content.
 func StripAllTags(html string) string {
 	var result strings.Builder
 	inTag := false
@@ -30,10 +28,8 @@ func StripAllTags(html string) string {
 	return collapseWhitespace(result.String())
 }
 
-// HTMLToText converts HTML to readable text by stripping tags and normalizing whitespace.
 func HTMLToText(html string) string {
 	cleaned := StripScriptsAndStyles(html)
-	// Convert block elements to newlines
 	for _, tag := range []string{"</p>", "</div>", "</li>", "</h1>", "</h2>", "</h3>", "</h4>", "</h5>", "</h6>", "<br>", "<br/>", "<br />"} {
 		cleaned = strings.ReplaceAll(cleaned, tag, "\n")
 	}
@@ -53,7 +49,6 @@ func removeBetweenTags(html, tag string) string {
 		}
 		end := strings.Index(lower[start:], closeTag)
 		if end < 0 {
-			// Remove to end
 			html = html[:start]
 			lower = lower[:start]
 			break
@@ -66,7 +61,6 @@ func removeBetweenTags(html, tag string) string {
 }
 
 func collapseWhitespace(s string) string {
-	// Collapse runs of spaces/tabs into single spaces
 	var result strings.Builder
 	prevSpace := false
 	for _, r := range s {

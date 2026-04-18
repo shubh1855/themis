@@ -28,7 +28,6 @@ func TestMemoryCache_MissOnExpired(t *testing.T) {
 
 	c.Set("key1", "value1")
 
-	// Wait for expiration
 	time.Sleep(100 * time.Millisecond)
 
 	_, ok := c.Get("key1")

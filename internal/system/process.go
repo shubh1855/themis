@@ -10,13 +10,11 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
 )
 
-// ProcessTracker manages background processes started by the agent.
 type ProcessTracker struct {
 	mu    sync.Mutex
 	procs map[int]*BackgroundProcess
 }
 
-// BackgroundProcess represents a running background process.
 type BackgroundProcess struct {
 	PID     int
 	Cmd     *exec.Cmd
@@ -24,14 +22,12 @@ type BackgroundProcess struct {
 	LogFile string
 }
 
-// NewProcessTracker creates a new process tracker.
 func NewProcessTracker() *ProcessTracker {
 	return &ProcessTracker{
 		procs: make(map[int]*BackgroundProcess),
 	}
 }
 
-// StartBackground starts a command in the background and tracks it.
 func (pt *ProcessTracker) StartBackground(ctx context.Context, command string, args []string, dir string) (*models.ProcessResult, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -39,7 +35,6 @@ func (pt *ProcessTracker) StartBackground(ctx context.Context, command string, a
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
 
-	// Create a log file for output
 	logFile := fmt.Sprintf("/tmp/agent_proc_%d.log", os.Getpid())
 	f, err := os.Create(logFile)
 	if err != nil {
@@ -66,7 +61,6 @@ func (pt *ProcessTracker) StartBackground(ctx context.Context, command string, a
 	}
 	pt.mu.Unlock()
 
-	// Wait in background to clean up
 	go func() {
 		cmd.Wait()
 		f.Close()
@@ -75,7 +69,6 @@ func (pt *ProcessTracker) StartBackground(ctx context.Context, command string, a
 	return &models.ProcessResult{PID: pid}, nil
 }
 
-// StopProcess stops a tracked background process.
 func (pt *ProcessTracker) StopProcess(pid int) error {
 	pt.mu.Lock()
 	bp, ok := pt.procs[pid]
@@ -90,7 +83,6 @@ func (pt *ProcessTracker) StopProcess(pid int) error {
 	return nil
 }
 
-// ProcessLogs reads the log file for a tracked background process.
 func (pt *ProcessTracker) ProcessLogs(pid int) (string, error) {
 	pt.mu.Lock()
 	bp, ok := pt.procs[pid]
@@ -108,7 +100,6 @@ func (pt *ProcessTracker) ProcessLogs(pid int) (string, error) {
 	return truncateOutput(string(data)), nil
 }
 
-// ListProcesses returns all tracked PIDs.
 func (pt *ProcessTracker) ListProcesses() []int {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()

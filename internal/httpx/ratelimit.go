@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// HostLimiter enforces per-host rate limits using a simple token bucket.
 type HostLimiter struct {
 	mu         sync.Mutex
 	buckets    map[string]*bucket
@@ -16,11 +15,10 @@ type HostLimiter struct {
 type bucket struct {
 	tokens    float64
 	maxTokens float64
-	refillRate float64 // tokens per second
+	refillRate float64
 	lastRefill time.Time
 }
 
-// NewHostLimiter creates a rate limiter with the given default requests-per-second.
 func NewHostLimiter(defaultRPS float64) *HostLimiter {
 	return &HostLimiter{
 		buckets:    make(map[string]*bucket),
@@ -28,8 +26,6 @@ func NewHostLimiter(defaultRPS float64) *HostLimiter {
 	}
 }
 
-// Wait blocks until the rate limit for the given host allows a request.
-// Respects context cancellation.
 func (h *HostLimiter) Wait(ctx context.Context, host string) error {
 	h.mu.Lock()
 	b, ok := h.buckets[host]
@@ -56,7 +52,6 @@ func (h *HostLimiter) Wait(ctx context.Context, host string) error {
 			h.mu.Unlock()
 			return nil
 		}
-		// Calculate wait time for next token
 		waitDur := time.Duration(float64(time.Second) / b.refillRate)
 		h.mu.Unlock()
 
@@ -78,7 +73,6 @@ func (b *bucket) refill() {
 	b.lastRefill = now
 }
 
-// SetHostRPS overrides the rate limit for a specific host.
 func (h *HostLimiter) SetHostRPS(host string, rps float64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

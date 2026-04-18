@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-// Migrate runs a SQL migration script against the database.
 func (d *DB) Migrate(ctx context.Context, sqlScript string) error {
 	statements := splitStatements(sqlScript)
 
@@ -30,7 +29,6 @@ func (d *DB) Migrate(ctx context.Context, sqlScript string) error {
 	return tx.Commit()
 }
 
-// MigrateFile reads a SQL file and runs it as a migration.
 func (d *DB) MigrateFile(ctx context.Context, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -40,6 +38,5 @@ func (d *DB) MigrateFile(ctx context.Context, path string) error {
 }
 
 func splitStatements(sql string) []string {
-	// Simple split on semicolons (naive but works for most migration files)
 	return strings.Split(sql, ";")
 }

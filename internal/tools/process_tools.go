@@ -13,7 +13,6 @@ import (
 
 var processTracker = system.NewProcessTracker()
 
-// HandleRunCmd executes a command and returns its output.
 func HandleRunCmd(ctx Context) models.ToolResponse {
 	command := models.ArgString(ctx.Req.Args, "command")
 	if command == "" {
@@ -35,7 +34,6 @@ func HandleRunCmd(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleRunFile runs a file using the appropriate interpreter.
 func HandleRunFile(ctx Context) models.ToolResponse {
 	path := models.ArgString(ctx.Req.Args, "path")
 	if path == "" {
@@ -47,7 +45,6 @@ func HandleRunFile(ctx Context) models.ToolResponse {
 		dir = ctx.Deps.RootDir
 	}
 
-	// Build command based on file extension
 	command := buildRunCommand(path)
 	if command == "" {
 		return models.ErrorResponse("run_file: unsupported file type")
@@ -60,7 +57,6 @@ func HandleRunFile(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleStartBackground starts a command in the background.
 func HandleStartBackground(ctx Context) models.ToolResponse {
 	command := models.ArgString(ctx.Req.Args, "command")
 	if command == "" {
@@ -80,7 +76,6 @@ func HandleStartBackground(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleStopBackground stops a background process.
 func HandleStopBackground(ctx Context) models.ToolResponse {
 	pid := models.ArgInt(ctx.Req.Args, "pid", 0)
 	if pid == 0 {
@@ -93,7 +88,6 @@ func HandleStopBackground(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(fmt.Sprintf("stopped process %d", pid))
 }
 
-// HandleLogsProcess reads logs from a background process.
 func HandleLogsProcess(ctx Context) models.ToolResponse {
 	pid := models.ArgInt(ctx.Req.Args, "pid", 0)
 	if pid == 0 {
@@ -107,7 +101,6 @@ func HandleLogsProcess(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(logs)
 }
 
-// HandleWaitPort waits for a TCP port to become available.
 func HandleWaitPort(ctx Context) models.ToolResponse {
 	port := models.ArgInt(ctx.Req.Args, "port", 0)
 	if port == 0 {

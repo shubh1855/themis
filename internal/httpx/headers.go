@@ -1,6 +1,5 @@
 package httpx
 
-// DefaultUserAgents returns a list of common browser user-agent strings for rotation.
 func DefaultUserAgents() []string {
 	return []string{
 		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -11,7 +10,6 @@ func DefaultUserAgents() []string {
 	}
 }
 
-// CommonHeaders returns standard headers to include with outgoing requests.
 func CommonHeaders() map[string]string {
 	return map[string]string{
 		"Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -21,7 +19,6 @@ func CommonHeaders() map[string]string {
 	}
 }
 
-// JSONHeaders returns headers suitable for JSON API requests.
 func JSONHeaders() map[string]string {
 	return map[string]string{
 		"Accept":       "application/json",
