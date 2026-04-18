@@ -66,12 +66,12 @@ const maxReactSteps = 8
 // ── Agent tool access ────────────────────────────────────────────────────────
 
 var agentTools = map[AgentID][]string{
-	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir"},
-	AgentAthena:     {}, // pure planning
-	AgentHephaestus: {"create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "fetch_url"},
-	AgentApollo:     {"web_search", "fetch_url", "run_cmd", "read_file", "npm_search", "pip_search", "cargo_search", "go_search"},
-	AgentHermes:     {"create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url"},
-	AgentAres:       {"read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir"},
+	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
+	AgentAthena:     {"delegate"}, // pure planning, delegates execution
+	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
+	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_run_js", "browser_close"},
+	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
+	AgentAres:       {"delegate", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
 }
 
 var toolDescs = map[string]string{
@@ -92,6 +92,9 @@ var toolDescs = map[string]string{
 	"cargo_search": `{"tool":"cargo_search","query":"<crate>"} — search crates.io`,
 	"go_search":    `{"tool":"go_search","query":"<module>"} — search Go modules`,
 	"delegate":     `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares>","task":"<instructions>"} — delegate to sub-agent`,
+	"browser_view":   `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
+	"browser_run_js": `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
+	"browser_close":  `{"tool":"browser_close"} — closes the browser if open`,
 }
 
 func reactSuffix(agent AgentID) string {
