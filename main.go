@@ -50,6 +50,10 @@ type model struct {
 
 	pendingQueue []tools.ToolRequest
 
+	// Agent state
+	activeAgent llm.AgentID
+
+	// PTY state
 	ptyMaster    *os.File
 	ptyCmd       *exec.Cmd
 	ptyCleanup   func()
@@ -170,8 +174,19 @@ func extractToolRequests(text string) []tools.ToolRequest {
 
 func (m *model) pushOutput(text string) {
 	m.history = append(m.history, text)
-	content := strings.Join(m.history, "\n\n")
-	m.viewport.SetContent(outputStyle.Render(content))
+	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
+	m.viewport.GotoBottom()
+}
+
+// pushAgentOutput adds output prefixed with the agent's styled badge.
+func (m *model) pushAgentOutput(agent llm.AgentID, text string) {
+	emoji := llm.AgentEmoji(agent)
+	badge := ui.AgentStyle(string(agent)).Render(emoji + " " + string(agent))
+	m.pushOutput(badge + " › " + text)
+}
+
+func (m *model) updateViewport() {
+	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
 	m.viewport.GotoBottom()
 }
 
@@ -244,18 +259,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 	case tea.MouseMsg:
-		if (msg.Action == tea.MouseActionRelease || msg.Action == tea.MouseActionPress) && msg.Button == tea.MouseButtonLeft {
-			if len(m.suggestions) > 0 {
-				statusLine := m.height - 1
-				footerTop := statusLine - 5
-				suggestionsTop := footerTop - len(m.suggestions)
-
-				if msg.Y >= suggestionsTop && msg.Y < footerTop {
-					m.selectedSug = msg.Y - suggestionsTop
-					if m.selectedSug >= 0 && m.selectedSug < len(m.suggestions) {
-						m.input.SetValue(m.suggestions[m.selectedSug])
-						m.input.CursorEnd()
-					}
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.viewport.LineUp(3)
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			m.viewport.LineDown(3)
+			return m, nil
+		case tea.MouseButtonLeft:
+			if (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease) &&
+				len(m.suggestions) > 0 {
+				sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
+				if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
+					m.selectedSug = idx
+					m.input.SetValue(m.suggestions[idx])
+					m.input.CursorEnd()
 				}
 			}
 		}
@@ -288,6 +306,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, m.drainQueue()
+
+	// ── Agent delegation: Zeus delegates to a sub-agent ──────────────────
+	case llm.DelegationMsg:
+		m.activeAgent = msg.Target
+		delegateText := fmt.Sprintf("delegating to %s %s: %s",
+			llm.AgentEmoji(msg.Target), string(msg.Target), msg.Task)
+		m.pushAgentOutput(llm.AgentZeus, ui.AgentDelegateStyle.Render(delegateText))
+		return m, tea.Batch(
+			llm.AskAgent(m.client, msg.Target, msg.Task, msg.Context),
+			m.spinner.Tick,
+		)
+
+	// ── Agent response ───────────────────────────────────────────────────
+	case llm.ResponseMsg:
+		m.loading = false
+		agent := msg.Agent
+		if agent == "" {
+			agent = llm.AgentZeus
+		}
+		m.activeAgent = agent
+
+		if msg.Err != nil {
+			m.pushAgentOutput(agent, "Error: "+msg.Err.Error())
+			return m, nil
+		}
+
+		text := strings.TrimSpace(msg.Text)
+		m.suggestions = nil
+		m.selectedSug = -1
+
+		if idx := strings.LastIndex(text, "SUGGESTIONS: "); idx != -1 {
+			_ = json.Unmarshal([]byte(text[idx+len("SUGGESTIONS: "):]), &m.suggestions)
+			text = strings.TrimSpace(text[:idx])
+		}
+		m.resizeView()
+
+		if reqs := extractToolRequests(text); len(reqs) > 0 {
+			// Show which agent is invoking tools
+			m.pushAgentOutput(agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
+			m.pendingQueue = reqs
+			return m, m.drainQueue()
+		}
+
+		if text != "" {
+			m.pushAgentOutput(agent, text)
+		}
 
 	case tea.KeyMsg:
 
@@ -370,7 +434,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushOutput("You > " + userPrompt)
 			m.input.SetValue("")
 			m.loading = true
-
+			m.activeAgent = llm.AgentZeus
 			m.suggestions = nil
 			m.selectedSug = -1
 			m.resizeView()
@@ -422,11 +486,16 @@ func (m model) View() string {
 		return ""
 	}
 
-	header := titleStyle.Render("Themis")
-
+	// Status bar text with active agent indicator
 	status := "Ready"
 	if m.loading {
-		status = "Thinking..."
+		agentBadge := ""
+		if m.activeAgent != "" {
+			emoji := llm.AgentEmoji(m.activeAgent)
+			agentBadge = ui.AgentStyle(string(m.activeAgent)).Render(
+				emoji+" "+string(m.activeAgent)) + " "
+		}
+		status = m.spinner.View() + " " + agentBadge + "Thinking..."
 	} else if m.running {
 		status = "Running..."
 	}
