@@ -97,10 +97,11 @@ var (
 // ── Dashboard list items ────────────────────────────────────────────────
 
 type dashItem struct {
-	kind  string // "project" or "chat" or "action"
-	label string
-	desc  string
-	id    int
+	kind      string // "project" or "chat" or "action"
+	label     string
+	desc      string
+	id        int
+	projectID int
 }
 
 // ── View modes ──────────────────────────────────────────────────────────
@@ -149,6 +150,9 @@ type model struct {
 	dashCursor   int
 	dashInput    textarea.Model // for "new project" name entry
 	dashCreating bool           // true when typing a new project name
+
+	activeProjectID int
+	qClient         *qdrant.Client
 
 	// ── Agent / Chat state (existing Themis logic) ──
 	client   *openai.Client
@@ -236,10 +240,11 @@ func buildDashItems(db *dbx.DB) []dashItem {
 	projects, _ := db.ListProjects(context.Background())
 	for _, p := range projects {
 		items = append(items, dashItem{
-			kind:  "project",
-			label: p.Name,
-			desc:  p.Path + "  (" + p.UpdatedAt + ")",
-			id:    p.ID,
+			kind:      "project",
+			label:     p.Name,
+			desc:      p.Path + "  (" + p.UpdatedAt + ")",
+			id:        p.ID,
+			projectID: p.ID,
 		})
 	}
 
@@ -247,10 +252,11 @@ func buildDashItems(db *dbx.DB) []dashItem {
 	chats, _ := db.RecentChats(context.Background())
 	for _, c := range chats {
 		items = append(items, dashItem{
-			kind:  "chat",
-			label: c.Title,
-			desc:  c.UpdatedAt,
-			id:    c.ID,
+			kind:      "chat",
+			label:     c.Title,
+			desc:      c.UpdatedAt,
+			id:        c.ID,
+			projectID: c.ProjectID,
 		})
 	}
 
@@ -287,19 +293,21 @@ func initialModel() model {
 	dashTA.SetHeight(1)
 	dashTA.ShowLineNumbers = false
 
+	llmClient := llm.NewClient(os.Getenv("INFERX_API_KEY"))
+
 	return model{
 		viewMode: ViewDashboard,
 		workers:  worker.NewPool(),
 		qdrant:   qdrant.New(),
+		qClient:  qdrant.NewClient("http://127.0.0.1:6333", llmClient),
 
 		dashItems: []dashItem{
 			{kind: "action", label: "＋  New Project", desc: "Create a new project workspace"},
 			{kind: "action", label: "＋  New Chat", desc: "Start a standalone chat session"},
 		},
-		dashCursor: 0,
-		dashInput:  dashTA,
-
-		client:      llm.NewClient(os.Getenv("INFERX_API_KEY")),
+		dashCursor:  0,
+		dashInput:   dashTA,
+		client:      llmClient,
 		registry:    tools.NewRegistry(fs),
 		perms:       tools.NewPermissionManager(),
 		executor:    tools.NewReactExecutor(wd),
@@ -791,6 +799,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			rootID := m.taskGraph.AddRoot("Zeus", truncate(userPrompt, 50))
 			m.activeTaskID = rootID
 
+			// If we have an active project, inject Qdrant context async before starting Zeus
+			if m.activeProjectID != 0 {
+				ch := make(chan tea.Msg, 32)
+				m.reactCh = ch
+				return m, tea.Batch(
+					m.spinner.Tick,
+					llm.WaitReact(ch), // <--- This was missing! It tells Bubble Tea to read the LLM messages.
+					func() tea.Msg {
+						// Wait for Qdrant search
+						ctx, err := m.qClient.SearchContext(context.Background(), m.activeProjectID, userPrompt)
+						if err != nil || ctx == "" {
+							// No context found or error, just proceed
+							go llm.RunReact(m.client, llm.AgentZeus, userPrompt, "", m.executor, ch)
+							return nil
+						}
+						// Proceed with context
+						go llm.RunReact(m.client, llm.AgentZeus, userPrompt, "Project vector memory context:\n"+ctx, m.executor, ch)
+						return nil
+					},
+				)
+			}
+
 			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, userPrompt, "", m.executor)
 			m.reactCh = ch
 			return m, tea.Batch(reactCmd, m.spinner.Tick)
@@ -849,6 +879,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if m.db != nil {
 					_ = m.db.TouchProject(context.Background(), item.id)
 				}
+				m.activeProjectID = item.projectID
 				m.viewMode = ViewChat
 				m.input.Focus()
 				m.pushOutput(dashSubtitle.Render("📂 Opened project: " + item.label))
@@ -856,6 +887,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if m.db != nil {
 					_ = m.db.TouchChat(context.Background(), item.id)
 				}
+				m.activeProjectID = item.projectID
 				m.viewMode = ViewChat
 				m.input.Focus()
 				m.pushOutput(dashSubtitle.Render("💬 Resumed chat: " + item.label))
@@ -944,7 +976,6 @@ func (m model) renderDashboard() string {
 	sb.Reset()
 	sb.WriteString(logoStyle.Render(logoArt))
 	sb.WriteString("\n")
-	sb.WriteString(dashSubtitle.Render("  Multi-Agent AI Coding Assistant  ⚡ Zeus 🦉 Athena 🔨 Hephaestus ☀️ Apollo 🪽 Hermes ⚔️ Ares"))
 	sb.WriteString("\n\n")
 	sb.WriteString("  " + sep + "\n\n")
 

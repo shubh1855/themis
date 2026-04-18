@@ -135,21 +135,44 @@ func (m *Manager) EnsureRunning() error {
 		}
 	}
 
+	// Write a minimal config so Qdrant uses our data directory
+	configPath := filepath.Join(filepath.Dir(m.binPath), "config.yaml")
+	configContent := fmt.Sprintf(`storage:
+  storage_path: %s
+  snapshots_path: %s/snapshots
+service:
+  host: 127.0.0.1
+  http_port: 6333
+  grpc_port: 6334
+telemetry_disabled: true
+`, m.dataDir, m.dataDir)
+	_ = os.WriteFile(configPath, []byte(configContent), 0644)
+
 	// Start the daemon
 	m.setStatus(StatusStarting, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
-	m.cmd = exec.CommandContext(ctx, m.binPath, "--storage-path", m.dataDir)
-	m.cmd.Stdout = nil
-	m.cmd.Stderr = nil
-	// Prevent Qdrant from inheriting our terminal stdin
+	m.cmd = exec.CommandContext(ctx, m.binPath, "--config-path", configPath, "--disable-telemetry")
+	m.cmd.Env = append(os.Environ(),
+		"QDRANT__STORAGE__STORAGE_PATH="+m.dataDir,
+		"QDRANT__SERVICE__HOST=127.0.0.1",
+		"QDRANT__SERVICE__HTTP_PORT=6333",
+	)
+	// Log stderr to a file for debugging
+	logPath := filepath.Join(filepath.Dir(m.binPath), "qdrant.log")
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	m.cmd.Stdout = logFile
+	m.cmd.Stderr = logFile
 	m.cmd.Stdin = nil
 
 	if err := m.cmd.Start(); err != nil {
 		m.setStatus(StatusFailed, err)
 		cancel()
+		if logFile != nil {
+			logFile.Close()
+		}
 		return fmt.Errorf("qdrant start: %w", err)
 	}
 
