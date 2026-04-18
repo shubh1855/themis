@@ -57,4 +57,52 @@ var (
 	ToolLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("205")).
 			Bold(true)
+
+	// ── Agent styles ─────────────────────────────────────────────────────
+
+	AgentZeusStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("226")).Bold(true) // gold/yellow
+
+	AgentAthenaStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("75")).Bold(true) // blue
+
+	AgentHephaestusStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("208")).Bold(true) // orange
+
+	AgentApolloStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("220")).Bold(true) // sun yellow
+
+	AgentHermesStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("158")).Bold(true) // teal/green
+
+	AgentAresStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).Bold(true) // red
+
+	AgentDelegateStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("141")).
+				Italic(true) // purple, delegating indicator
+
+	AgentBadgeStyle = lipgloss.NewStyle().
+			Bold(true).
+			PaddingLeft(1).PaddingRight(1)
 )
+
+// AgentStyle returns the color style for a given agent name.
+func AgentStyle(name string) lipgloss.Style {
+	switch name {
+	case "Zeus":
+		return AgentZeusStyle
+	case "Athena":
+		return AgentAthenaStyle
+	case "Hephaestus":
+		return AgentHephaestusStyle
+	case "Apollo":
+		return AgentApolloStyle
+	case "Hermes":
+		return AgentHermesStyle
+	case "Ares":
+		return AgentAresStyle
+	default:
+		return StatusStyle
+	}
+}

@@ -63,6 +63,9 @@ type model struct {
 	pendingQueue []tools.ToolRequest
 	review       *toolReview // non-nil → footer shows review options
 
+	// Agent state
+	activeAgent llm.AgentID
+
 	// PTY state
 	ptyMaster    *os.File
 	ptyCmd       *exec.Cmd
@@ -131,6 +134,13 @@ func (m *model) pushOutput(text string) {
 	m.history = append(m.history, text)
 	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
 	m.viewport.GotoBottom()
+}
+
+// pushAgentOutput adds output prefixed with the agent's styled badge.
+func (m *model) pushAgentOutput(agent llm.AgentID, text string) {
+	emoji := llm.AgentEmoji(agent)
+	badge := ui.AgentStyle(string(agent)).Render(emoji + " " + string(agent))
+	m.pushOutput(badge + " › " + text)
 }
 
 func (m *model) updateViewport() {
@@ -244,14 +254,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 	case tea.MouseMsg:
-		if msg.Button == tea.MouseButtonLeft &&
-			(msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease) &&
-			len(m.suggestions) > 0 {
-			sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
-			if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
-				m.selectedSug = idx
-				m.input.SetValue(m.suggestions[idx])
-				m.input.CursorEnd()
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.viewport.LineUp(3)
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			m.viewport.LineDown(3)
+			return m, nil
+		case tea.MouseButtonLeft:
+			if (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease) &&
+				len(m.suggestions) > 0 {
+				sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
+				if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
+					m.selectedSug = idx
+					m.input.SetValue(m.suggestions[idx])
+					m.input.CursorEnd()
+				}
 			}
 		}
 
@@ -288,10 +306,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.drainQueue()
 
+	// ── Agent delegation: Zeus delegates to a sub-agent ──────────────────
+	case llm.DelegationMsg:
+		m.activeAgent = msg.Target
+		delegateText := fmt.Sprintf("delegating to %s %s: %s",
+			llm.AgentEmoji(msg.Target), string(msg.Target), msg.Task)
+		m.pushAgentOutput(llm.AgentZeus, ui.AgentDelegateStyle.Render(delegateText))
+		return m, tea.Batch(
+			llm.AskAgent(m.client, msg.Target, msg.Task, msg.Context),
+			m.spinner.Tick,
+		)
+
+	// ── Agent response ───────────────────────────────────────────────────
 	case llm.ResponseMsg:
 		m.loading = false
+		agent := msg.Agent
+		if agent == "" {
+			agent = llm.AgentZeus
+		}
+		m.activeAgent = agent
+
 		if msg.Err != nil {
-			m.pushOutput("Error: " + msg.Err.Error())
+			m.pushAgentOutput(agent, "Error: "+msg.Err.Error())
 			return m, nil
 		}
 
@@ -306,12 +342,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 		if reqs := extractToolRequests(text); len(reqs) > 0 {
+			// Show which agent is invoking tools
+			m.pushAgentOutput(agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
 			m.pendingQueue = reqs
 			return m, m.drainQueue()
 		}
 
 		if text != "" {
-			m.pushOutput("AI > " + text)
+			m.pushAgentOutput(agent, text)
 		}
 
 	case tea.KeyMsg:
@@ -420,6 +458,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushOutput("You > " + userPrompt)
 			m.input.SetValue("")
 			m.loading = true
+			m.activeAgent = llm.AgentZeus
 			m.suggestions = nil
 			m.selectedSug = -1
 			m.resizeView()
@@ -441,10 +480,16 @@ func (m model) View() string {
 		return ""
 	}
 
-	// Status bar text
+	// Status bar text with active agent indicator
 	status := "Ready"
 	if m.loading {
-		status = m.spinner.View() + " Thinking..."
+		agentBadge := ""
+		if m.activeAgent != "" {
+			emoji := llm.AgentEmoji(m.activeAgent)
+			agentBadge = ui.AgentStyle(string(m.activeAgent)).Render(
+				emoji+" "+string(m.activeAgent)) + " "
+		}
+		status = m.spinner.View() + " " + agentBadge + "Thinking..."
 	} else if m.running {
 		status = m.spinner.View() + " Running..."
 	}
