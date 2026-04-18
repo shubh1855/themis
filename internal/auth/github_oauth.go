@@ -1,4 +1,12 @@
-// Package auth implements GitHub OAuth Device Flow for CLI authentication.
+// Package auth implements GitHub authentication for the Themis CLI.
+//
+// Authentication strategy (in priority order):
+//  1. Stored Themis token: ~/.config/themis/github_token.json
+//  2. gh CLI auth: uses `gh auth token` if gh is installed and authenticated
+//  3. Env vars: GH_TOKEN or GITHUB_TOKEN
+//
+// For login, we prefer `gh auth login` (which handles OAuth Device Flow
+// correctly with a pre-registered app) over our own Device Flow.
 package auth
 
 import (
@@ -7,20 +15,151 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
+// StoredToken is the token data persisted to disk.
+type StoredToken struct {
+	AccessToken string    `json:"access_token"`
+	TokenType   string    `json:"token_type"`
+	Scope       string    `json:"scope"`
+	CreatedAt   time.Time `json:"created_at"`
+	Username    string    `json:"username"`
+}
+
+// ── Token resolution ─────────────────────────────────────────────────────────
+
+// GetToken returns the best available GitHub token via priority chain.
+func GetToken() string {
+	// 1. Themis stored token
+	if tok, err := LoadToken(); err == nil && tok.AccessToken != "" {
+		return tok.AccessToken
+	}
+	// 2. gh CLI
+	if tok := ghCliToken(); tok != "" {
+		return tok
+	}
+	// 3. Environment variables
+	if tok := os.Getenv("GH_TOKEN"); tok != "" {
+		return tok
+	}
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		return tok
+	}
+	return ""
+}
+
+// IsLoggedIn returns true if any authentication source has a valid token.
+func IsLoggedIn() bool {
+	return GetToken() != ""
+}
+
+// GetUsername returns the authenticated GitHub username, or "" if not found.
+func GetUsername() string {
+	// Check stored Themis token first
+	if tok, err := LoadToken(); err == nil && tok.Username != "" {
+		return tok.Username
+	}
+	// Try to fetch from GitHub API using any available token
+	token := GetToken()
+	if token == "" {
+		return ""
+	}
+	return fetchGitHubUsername(token)
+}
+
+// ── gh CLI bridge ─────────────────────────────────────────────────────────────
+
+// ghCliToken runs `gh auth token` and returns the token if gh is authenticated.
+func ghCliToken() string {
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ghCliLogin runs `gh auth login` interactively.
+// This is the preferred login method as gh has a pre-registered OAuth App.
+func ghCliLogin() error {
+	cmd := exec.Command("gh", "auth", "login", "--web", "--hostname", "github.com")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// ── Login flow ────────────────────────────────────────────────────────────────
+
+// Login authenticates the user with GitHub.
+// It first tries `gh auth login` (interactive, uses gh's own OAuth App).
+// Returns the instructions to show the user and the access token once done.
+func Login(ctx context.Context) (instructions string, token string, err error) {
+	// Check if gh is available
+	if _, lookErr := exec.LookPath("gh"); lookErr == nil {
+		instructions = "Opening GitHub login via gh CLI (browser-based OAuth)..."
+		if loginErr := ghCliLogin(); loginErr != nil {
+			// gh login failed — try Device Flow as fallback
+			return loginDeviceFlow(ctx)
+		}
+		// gh auth login succeeded — get token and persist it
+		tok := ghCliToken()
+		if tok == "" {
+			return "", "", fmt.Errorf("auth: gh auth login succeeded but token is empty")
+		}
+		username := fetchGitHubUsername(tok)
+		stored := StoredToken{
+			AccessToken: tok,
+			TokenType:   "bearer",
+			Scope:       "repo",
+			CreatedAt:   time.Now().UTC(),
+			Username:    username,
+		}
+		_ = SaveToken(&stored)
+		os.Setenv("GH_TOKEN", tok)
+		os.Setenv("GITHUB_TOKEN", tok)
+		return instructions, tok, nil
+	}
+
+	// gh not installed — fall back to Device Flow
+	return loginDeviceFlow(ctx)
+}
+
+// Logout removes the stored Themis token. Does not log out of gh CLI.
+func Logout() error {
+	path, err := tokenPath()
+	if err != nil {
+		return err
+	}
+	os.Unsetenv("GH_TOKEN")
+	os.Unsetenv("GITHUB_TOKEN")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// ── Device Flow fallback ──────────────────────────────────────────────────────
+
 const (
 	deviceCodeURL   = "https://github.com/login/device/code"
 	tokenURL        = "https://github.com/login/oauth/access_token"
-	defaultClientID = "Ov23liGg5X2AoCl9DreF"
 )
 
-// DeviceCodeResponse is returned by the GitHub device code endpoint.
+// deviceClientID returns the OAuth App Client ID from env or gh's own.
+func deviceClientID() string {
+	if id := os.Getenv("THEMIS_GITHUB_CLIENT_ID"); id != "" {
+		return id
+	}
+	// gh CLI's public client ID (works without registering an app)
+	return "178c6fc778ccc68e1d6a"
+}
+
+// DeviceCodeResponse is returned by GitHub's device code endpoint.
 type DeviceCodeResponse struct {
 	DeviceCode      string `json:"device_code"`
 	UserCode        string `json:"user_code"`
@@ -36,37 +175,44 @@ type tokenPollResponse struct {
 	Error       string `json:"error"`
 }
 
-// StoredToken is the token data persisted to disk.
-type StoredToken struct {
-	AccessToken string    `json:"access_token"`
-	TokenType   string    `json:"token_type"`
-	Scope       string    `json:"scope"`
-	CreatedAt   time.Time `json:"created_at"`
-	Username    string    `json:"username"`
-}
-
-func clientID() string {
-	if id := os.Getenv("THEMIS_GITHUB_CLIENT_ID"); id != "" {
-		return id
-	}
-	return defaultClientID
-}
-
-func tokenPath() (string, error) {
-	home, err := os.UserHomeDir()
+func loginDeviceFlow(ctx context.Context) (instructions string, token string, err error) {
+	dc, err := requestDeviceCode(ctx)
 	if err != nil {
-		return "", err
+		return "", "", fmt.Errorf(
+			"GitHub OAuth Device Flow failed: %w\n\nAlternatively, install gh CLI and run: gh auth login", err)
 	}
-	return filepath.Join(home, ".config", "themis", "github_token.json"), nil
+
+	instructions = fmt.Sprintf(
+		"Open %s in your browser and enter this code: %s",
+		dc.VerificationURI, dc.UserCode,
+	)
+
+	tok, err := pollForToken(ctx, dc.DeviceCode, dc.Interval)
+	if err != nil {
+		return instructions, "", err
+	}
+
+	username := fetchGitHubUsername(tok.AccessToken)
+	stored := StoredToken{
+		AccessToken: tok.AccessToken,
+		TokenType:   tok.TokenType,
+		Scope:       tok.Scope,
+		CreatedAt:   time.Now().UTC(),
+		Username:    username,
+	}
+	if err := SaveToken(&stored); err != nil {
+		return instructions, "", fmt.Errorf("auth: save token: %w", err)
+	}
+
+	os.Setenv("GH_TOKEN", tok.AccessToken)
+	os.Setenv("GITHUB_TOKEN", tok.AccessToken)
+
+	return instructions, tok.AccessToken, nil
 }
 
-// RequestDeviceCode requests a device code from GitHub.
-func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
-	vals := url.Values{
-		"client_id": {clientID()},
-		"scope":     {"repo"},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceCodeURL, strings.NewReader(vals.Encode()))
+func requestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
+	body := strings.NewReader(fmt.Sprintf("client_id=%s&scope=repo", deviceClientID()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, deviceCodeURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -79,23 +225,22 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCodeResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
 	var dc DeviceCodeResponse
-	if err := json.Unmarshal(body, &dc); err != nil {
-		return nil, fmt.Errorf("auth: parse device code response: %w", err)
+	if err := json.Unmarshal(data, &dc); err != nil {
+		return nil, fmt.Errorf("parse device code: %w", err)
 	}
 	if dc.DeviceCode == "" {
-		return nil, fmt.Errorf("auth: no device code returned — set THEMIS_GITHUB_CLIENT_ID")
+		return nil, fmt.Errorf("no device_code returned — check THEMIS_GITHUB_CLIENT_ID or install gh CLI")
 	}
 	return &dc, nil
 }
 
-// PollForToken polls GitHub until the user completes authorization or an error occurs.
-func PollForToken(ctx context.Context, deviceCode string, interval int) (*tokenPollResponse, error) {
+func pollForToken(ctx context.Context, deviceCode string, interval int) (*tokenPollResponse, error) {
 	if interval <= 0 {
 		interval = 5
 	}
@@ -115,28 +260,27 @@ func PollForToken(ctx context.Context, deviceCode string, interval int) (*tokenP
 			case "":
 				return tok, nil
 			case "authorization_pending":
-				// user has not yet authorized
+				// continuing to poll
 			case "slow_down":
 				interval += 5
 				ticker.Reset(time.Duration(interval) * time.Second)
 			case "expired_token":
-				return nil, fmt.Errorf("auth: device code expired — run github_login again")
+				return nil, fmt.Errorf("device code expired — run github_login again")
 			case "access_denied":
-				return nil, fmt.Errorf("auth: access denied by user")
+				return nil, fmt.Errorf("access denied by user")
 			default:
-				return nil, fmt.Errorf("auth: unexpected error: %s", tok.Error)
+				return nil, fmt.Errorf("unexpected error: %s", tok.Error)
 			}
 		}
 	}
 }
 
 func pollOnce(ctx context.Context, deviceCode string) (*tokenPollResponse, error) {
-	vals := url.Values{
-		"client_id":   {clientID()},
-		"device_code": {deviceCode},
-		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(vals.Encode()))
+	body := strings.NewReader(fmt.Sprintf(
+		"client_id=%s&device_code=%s&grant_type=urn:ietf:params:oauth:grant-type:device_code",
+		deviceClientID(), deviceCode,
+	))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -149,47 +293,26 @@ func pollOnce(ctx context.Context, deviceCode string) (*tokenPollResponse, error
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
 	var tok tokenPollResponse
-	if err := json.Unmarshal(body, &tok); err != nil {
-		return nil, fmt.Errorf("auth: parse token response: %w", err)
+	if err := json.Unmarshal(data, &tok); err != nil {
+		return nil, fmt.Errorf("parse token response: %w", err)
 	}
 	return &tok, nil
 }
 
-// Login runs the full GitHub Device Flow. Blocks until the user authorizes.
-// Returns the display instructions and the access token once authentication completes.
-func Login(ctx context.Context) (instructions string, token string, err error) {
-	dc, err := RequestDeviceCode(ctx)
+// ── Token persistence ─────────────────────────────────────────────────────────
+
+func tokenPath() (string, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", fmt.Errorf("auth: request device code: %w", err)
+		return "", err
 	}
-
-	instructions = fmt.Sprintf("Open %s and enter code: %s", dc.VerificationURI, dc.UserCode)
-
-	tok, err := PollForToken(ctx, dc.DeviceCode, dc.Interval)
-	if err != nil {
-		return instructions, "", err
-	}
-
-	stored := StoredToken{
-		AccessToken: tok.AccessToken,
-		TokenType:   tok.TokenType,
-		Scope:       tok.Scope,
-		CreatedAt:   time.Now().UTC(),
-	}
-	if err := SaveToken(&stored); err != nil {
-		return instructions, "", fmt.Errorf("auth: save token: %w", err)
-	}
-
-	os.Setenv("GH_TOKEN", tok.AccessToken)
-	os.Setenv("GITHUB_TOKEN", tok.AccessToken)
-
-	return instructions, tok.AccessToken, nil
+	return filepath.Join(home, ".config", "themis", "github_token.json"), nil
 }
 
 // SaveToken writes the token to disk with 0600 permissions.
@@ -225,31 +348,26 @@ func LoadToken() (*StoredToken, error) {
 	return &tok, nil
 }
 
-// IsLoggedIn returns true if a valid stored token exists.
-func IsLoggedIn() bool {
-	tok, err := LoadToken()
-	return err == nil && tok.AccessToken != ""
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// GetToken returns the stored access token string.
-func GetToken() (string, error) {
-	tok, err := LoadToken()
+func fetchGitHubUsername(token string) string {
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
 	if err != nil {
-		return "", err
+		return ""
 	}
-	return tok.AccessToken, nil
-}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
 
-// Logout deletes the stored token file.
-func Logout() error {
-	path, err := tokenPath()
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
+		return ""
 	}
-	os.Unsetenv("GH_TOKEN")
-	os.Unsetenv("GITHUB_TOKEN")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	defer resp.Body.Close()
+
+	var user struct {
+		Login string `json:"login"`
 	}
-	return nil
+	data, _ := io.ReadAll(resp.Body)
+	json.Unmarshal(data, &user)
+	return user.Login
 }
