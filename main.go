@@ -17,8 +17,8 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/llm"
-	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
+	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
 )
 
@@ -27,7 +27,7 @@ import (
 type reviewOpt int
 
 const (
-	optAccept    reviewOpt = iota
+	optAccept reviewOpt = iota
 	optReject
 	optAcceptAll
 )
@@ -270,16 +270,6 @@ func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
 		return m.drainQueue()
 	}
 
-	// Queue fully drained — send accumulated tool outputs back to the invoking agent.
-	if len(m.pendingToolResults) > 0 && m.toolCallAgent != "" {
-		results := m.pendingToolResults
-		agent := m.toolCallAgent
-		history := m.agentHistory
-		m.pendingToolResults = nil
-		m.loading = true
-		return llm.AskAgentWithResults(m.client, agent, results, history)
-	}
-
 	return nil
 }
 
@@ -319,12 +309,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.CursorEnd()
 				}
 			}
-		}
-
-	case spinner.TickMsg:
-		if m.loading || m.running {
-			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
 		}
 
 	// ── PTY events ───────────────────────────────────────────────────────
@@ -385,7 +369,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pushAgentOutput(msg.From,
 			ui.AgentDelegateStyle.Render(fmt.Sprintf("→ delegating to %s %s",
 				llm.AgentEmoji(msg.Target), string(msg.Target))))
-		m.pushOutput(ui.ThinkStyle.Render("  task: "+msg.Task))
+		m.pushOutput(ui.ThinkStyle.Render("  task: " + msg.Task))
 
 		// Start sub-agent ReAct loop
 		m.activeAgent = msg.Target
@@ -415,26 +399,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingQueue = reqs
 			return m, m.drainQueue()
 		}
-
-		// If Athena returned a structured plan, queue ALL delegations — not just the first.
-		if agent == llm.AgentAthena {
-			if plan := llm.ParseAthenaPlan(text); plan != nil {
-				if text != "" {
-					m.pushAgentOutput(agent, text)
-				}
-				delegations := llm.DispatchPlanTasks(plan)
-				if len(delegations) > 0 {
-					m.pendingDelegations = delegations[1:]
-					m.loading = true
-					first := delegations[0]
-					return m, func() tea.Msg { return first }
-				}
-				return m, nil
-			}
-		}
-
-		// Agent is done (no more tool calls) — show its response.
-		m.toolCallAgent = ""
 		if text != "" {
 			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(text))
 		}
@@ -550,7 +514,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetValue("")
 			m.loading = true
 			m.activeAgent = llm.AgentZeus
-			m.agentHistory = nil
 			m.suggestions = nil
 			m.selectedSug = -1
 			m.resizeView()
