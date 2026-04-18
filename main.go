@@ -147,8 +147,8 @@ type model struct {
 	// ── Dashboard state ──
 	dashItems    []dashItem
 	dashCursor   int
-	dashInput    textarea.Model   // for "new project" name entry
-	dashCreating bool             // true when typing a new project name
+	dashInput    textarea.Model // for "new project" name entry
+	dashCreating bool           // true when typing a new project name
 
 	// ── Agent / Chat state (existing Themis logic) ──
 	client   *openai.Client
@@ -189,8 +189,8 @@ type model struct {
 // ── DB init message ─────────────────────────────────────────────────────
 
 type dbReadyMsg struct {
-	db   *dbx.DB
-	err  error
+	db    *dbx.DB
+	err   error
 	items []dashItem
 }
 
@@ -292,7 +292,7 @@ func initialModel() model {
 		workers:  worker.NewPool(),
 		qdrant:   qdrant.New(),
 
-		dashItems:  []dashItem{
+		dashItems: []dashItem{
 			{kind: "action", label: "＋  New Project", desc: "Create a new project workspace"},
 			{kind: "action", label: "＋  New Chat", desc: "Start a standalone chat session"},
 		},
@@ -914,8 +914,7 @@ func (m model) renderDashboard() string {
 		Foreground(brandPrimary).
 		Bold(true)
 	sb.WriteString(logoStyle.Render(logoArt))
-	sb.WriteString("\n")
-	sb.WriteString(dashSubtitle.Render("  Multi-Agent AI Coding Assistant  ⚡ Zeus 🦉 Athena 🔨 Hephaestus ☀️ Apollo 🪽 Hermes ⚔️ Ares"))
+
 	sb.WriteString("\n\n")
 
 	// Separator
