@@ -67,6 +67,10 @@ type model struct {
 	activeAgent llm.AgentID
 	thinkIdx    int // index in history for live thinking block (-1 = none)
 
+	// Task graph
+	taskGraph      *ui.TaskGraph
+	activeTaskID   string // currently running task node ID
+
 	// PTY state
 	ptyMaster    *os.File
 	ptyCmd       *exec.Cmd
@@ -107,6 +111,7 @@ func initialModel() model {
 		history:     []string{},
 		selectedSug: -1,
 		thinkIdx:    -1,
+		taskGraph:   ui.NewTaskGraph(),
 	}
 }
 
@@ -166,7 +171,12 @@ func (m *model) resizeView() {
 	if h < 1 {
 		h = 1
 	}
-	m.viewport.Width = m.width - 4
+	// 80% width for main panel, 20% for task graph
+	mainW := m.width * 80 / 100
+	if mainW < 40 {
+		mainW = m.width - 4 // fallback if terminal too narrow
+	}
+	m.viewport.Width = mainW - 4
 	m.viewport.Height = h
 	m.input.SetWidth(m.width - 6)
 	m.help.Width = m.width
@@ -354,6 +364,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		badge := ui.AgentStyle(string(msg.Agent)).Render(llm.AgentEmoji(msg.Agent))
 		m.pushOutput(badge + " " + ui.ToolExecStyle.Render("🔧 "+msg.Tool) +
 			"  " + ui.StatusStyle.Render(truncate(msg.Display, 80)))
+		// Track tool call in task graph
+		if tid := m.activeTaskID; tid != "" {
+			m.taskGraph.AddToolCall(tid, msg.Tool+": "+truncate(msg.Display, 40))
+		}
 		return m, llm.WaitReact(m.reactCh)
 
 	// ── ReAct: tool result ───────────────────────────────────────────────
@@ -371,6 +385,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				llm.AgentEmoji(msg.Target), string(msg.Target))))
 		m.pushOutput(ui.ThinkStyle.Render("  task: " + msg.Task))
 
+		// Mark parent task done, add child task
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskDone)
+		}
+		parentID := m.activeTaskID
+		if parentID == "" && m.taskGraph.Root != nil {
+			parentID = m.taskGraph.Root.ID
+		}
+		childID := m.taskGraph.AddChild(parentID, string(msg.Target), truncate(msg.Task, 50))
+		m.taskGraph.SetStatus(childID, ui.TaskRunning)
+		m.activeTaskID = childID
+
 		// Start sub-agent ReAct loop
 		m.activeAgent = msg.Target
 		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, m.executor)
@@ -382,6 +408,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endThinkBlock()
 		m.loading = false
 		m.reactCh = nil
+
+		// Mark task as done
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskDone)
+		}
 
 		text := strings.TrimSpace(msg.Text)
 		m.suggestions = nil
@@ -413,6 +444,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endThinkBlock()
 		m.loading = false
 		m.reactCh = nil
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskFailed)
+		}
 		m.pushAgentOutput(msg.Agent, "Error: "+msg.Err.Error())
 
 	// ── Key events ───────────────────────────────────────────────────────
@@ -518,6 +552,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectedSug = -1
 			m.resizeView()
 
+			// Reset task graph for new request
+			m.taskGraph = ui.NewTaskGraph()
+			rootID := m.taskGraph.AddRoot("Zeus", truncate(userPrompt, 50))
+			m.activeTaskID = rootID
+
 			// Start ReAct loop with Zeus
 			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, userPrompt, "", m.executor)
 			m.reactCh = ch
@@ -550,12 +589,33 @@ func (m model) View() string {
 		status = m.spinner.View() + " Running..."
 	}
 
+	// ── Calculate panel widths ──────────────────────────────────────────
+	mainW := m.width * 80 / 100
+	graphW := m.width - mainW
+	if mainW < 40 {
+		mainW = m.width
+		graphW = 0
+	}
+
+	// ── Left panel: chat viewport ───────────────────────────────────────
 	bodyContent := lipgloss.NewStyle().
 		Height(m.viewport.Height).
 		MaxHeight(m.viewport.Height).
 		Render(m.viewport.View())
-	body := ui.BorderStyle.Render(ui.TitleStyle.Render("Themis") + "\n\n" + bodyContent)
+	leftPanel := ui.BorderStyle.Copy().Width(mainW - 2).Render(
+		ui.TitleStyle.Render("Themis") + "\n\n" + bodyContent)
 
+	// ── Right panel: task graph ─────────────────────────────────────────
+	var topRow string
+	if graphW > 8 {
+		graphH := m.viewport.Height + 4 // match left panel height
+		rightPanel := m.taskGraph.Render(graphW, graphH)
+		topRow = lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+	} else {
+		topRow = leftPanel
+	}
+
+	// ── Suggestions ─────────────────────────────────────────────────────
 	var sugView string
 	if len(m.suggestions) > 0 {
 		lines := make([]string, len(m.suggestions))
@@ -569,6 +629,7 @@ func (m model) View() string {
 		sugView = lipgloss.JoinVertical(lipgloss.Left, lines...)
 	}
 
+	// ── Footer ──────────────────────────────────────────────────────────
 	var footer string
 	if m.review != nil {
 		footer = m.reviewFooter()
@@ -578,7 +639,7 @@ func (m model) View() string {
 
 	helpBar := ui.StatusStyle.Render(status + "   " + m.help.View(ui.Keys))
 
-	parts := []string{body}
+	parts := []string{topRow}
 	if sugView != "" {
 		parts = append(parts, sugView)
 	}
