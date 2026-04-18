@@ -25,6 +25,7 @@ const (
 	AgentApollo     AgentID = "Apollo"
 	AgentHermes     AgentID = "Hermes"
 	AgentAres       AgentID = "Ares"
+	AgentPrometheus AgentID = "Prometheus"
 )
 
 // agentPrompts maps each agent to its system prompt.
@@ -35,6 +36,7 @@ var agentPrompts = map[AgentID]string{
 	AgentApollo:     agents.ApolloPrompt,
 	AgentHermes:     agents.HermesPrompt,
 	AgentAres:       agents.AresPrompt,
+	AgentPrometheus: agents.PrometheusPrompt,
 }
 
 // AgentEmoji returns a visual badge for the agent.
@@ -52,6 +54,8 @@ func AgentEmoji(id AgentID) string {
 		return ""
 	case AgentAres:
 		return ""
+	case AgentPrometheus:
+		return "🔥"
 	default:
 		return ""
 	}
@@ -149,7 +153,7 @@ If this is a SIMPLE request (quick answer, single file, small edit), handle it d
 If this is a COMPLEX request needing specialized work, respond with a JSON delegation:
 {"delegate": "<agent_name>", "task": "<specific instructions for that agent>", "context": "<relevant context>"}
 
-Available agents: Athena (planning), Hephaestus (coding), Apollo (research), Hermes (docs/communication), Ares (testing)
+Available agents: Athena (planning), Hephaestus (coding), Apollo (research), Hermes (docs/communication), Ares (testing), Prometheus (git/GitHub workflows)
 
 User request: %s`, userPrompt)
 
@@ -392,6 +396,8 @@ func resolveAgentName(name string) AgentID {
 		return AgentAres
 	case "zeus":
 		return AgentZeus
+	case "prometheus":
+		return AgentPrometheus
 	default:
 		return ""
 	}
