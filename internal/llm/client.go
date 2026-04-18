@@ -41,19 +41,19 @@ var agentPrompts = map[AgentID]string{
 func AgentEmoji(id AgentID) string {
 	switch id {
 	case AgentZeus:
-		return "⚡"
+		return ""
 	case AgentAthena:
-		return "🦉"
+		return ""
 	case AgentHephaestus:
-		return "🔨"
+		return ""
 	case AgentApollo:
-		return "☀️"
+		return ""
 	case AgentHermes:
-		return "🪽"
+		return ""
 	case AgentAres:
-		return "🛡️"
+		return ""
 	default:
-		return "🤖"
+		return ""
 	}
 }
 
