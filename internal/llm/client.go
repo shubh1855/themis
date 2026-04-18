@@ -1,21 +1,12 @@
-// Package llm provides the LLM client and agent orchestration layer.
 package llm
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
-
-	tea "github.com/charmbracelet/bubbletea"
 	openai "github.com/sashabaranov/go-openai"
 
 	agents "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/prompt/agents"
 )
 
-// ── Agent definitions ────────────────────────────────────────────────────────
 
-// AgentID identifies which agent is speaking.
 type AgentID string
 
 const (
@@ -28,7 +19,8 @@ const (
 	AgentPrometheus AgentID = "Prometheus"
 )
 
-// agentPrompts maps each agent to its system prompt.
+const reactModel = "google/gemma-4-31B-it"
+
 var agentPrompts = map[AgentID]string{
 	AgentZeus:       agents.ZeusPrompt,
 	AgentAthena:     agents.AthenaPrompt,
@@ -39,7 +31,6 @@ var agentPrompts = map[AgentID]string{
 	AgentPrometheus: agents.PrometheusPrompt,
 }
 
-// AgentEmoji returns a visual badge for the agent.
 func AgentEmoji(id AgentID) string {
 	switch id {
 	case AgentZeus:
@@ -61,37 +52,6 @@ func AgentEmoji(id AgentID) string {
 	}
 }
 
-// ── Messages ─────────────────────────────────────────────────────────────────
-
-// ResponseMsg is the tea.Msg delivered when an LLM call completes.
-type ResponseMsg struct {
-	Text    string
-	Err     error
-	Agent   AgentID
-	History []openai.ChatCompletionMessage
-}
-
-// DelegationMsg is sent when Zeus delegates to a sub-agent.
-type DelegationMsg struct {
-	Target  AgentID
-	Task    string
-	Context string // additional context from Zeus
-}
-
-// AgentStartMsg signals the UI that an agent has started working.
-type AgentStartMsg struct {
-	Agent AgentID
-	Task  string
-}
-
-// AgentDoneMsg signals the UI that an agent finished.
-type AgentDoneMsg struct {
-	Agent AgentID
-}
-
-// ── Client ───────────────────────────────────────────────────────────────────
-
-// NewClient creates a configured OpenAI-compatible client pointing at the LiteLLM proxy.
 func NewClient(apiKey string) *openai.Client {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = "https://litellm-proxy-93ef.onrender.com/v1"
@@ -383,18 +343,18 @@ func tryParseDelegation(s string) *delegationPayload {
 }
 
 func resolveAgentName(name string) AgentID {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "athena":
+	switch name {
+	case "athena", "Athena":
 		return AgentAthena
-	case "hephaestus":
+	case "hephaestus", "Hephaestus":
 		return AgentHephaestus
-	case "apollo":
+	case "apollo", "Apollo":
 		return AgentApollo
-	case "hermes":
+	case "hermes", "Hermes":
 		return AgentHermes
-	case "ares":
+	case "ares", "Ares":
 		return AgentAres
-	case "zeus":
+	case "zeus", "Zeus":
 		return AgentZeus
 	case "prometheus":
 		return AgentPrometheus

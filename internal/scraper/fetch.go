@@ -1,4 +1,3 @@
-// Package scraper provides content extraction from web pages.
 package scraper
 
 import (
@@ -10,17 +9,14 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/httpx"
 )
 
-// Fetcher retrieves web page content using the hardened HTTP client.
 type Fetcher struct {
 	client *httpx.Client
 }
 
-// NewFetcher creates a page fetcher.
 func NewFetcher(client *httpx.Client) *Fetcher {
 	return &Fetcher{client: client}
 }
 
-// FetchPage retrieves the raw HTML of a URL.
 func (f *Fetcher) FetchPage(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -30,6 +26,7 @@ func (f *Fetcher) FetchPage(ctx context.Context, url string) (string, error) {
 	for k, v := range httpx.CommonHeaders() {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("User-Agent", httpx.DefaultUserAgents()[0])
 
 	resp, err := f.client.Do(ctx, req)
 	if err != nil {
@@ -37,7 +34,7 @@ func (f *Fetcher) FetchPage(ctx context.Context, url string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("scraper: %q returned %d", url, resp.StatusCode)
 	}
 
@@ -50,7 +47,6 @@ func (f *Fetcher) FetchPage(ctx context.Context, url string) (string, error) {
 	return string(body), nil
 }
 
-// FetchJSON fetches a URL and returns the raw JSON body.
 func (f *Fetcher) FetchJSON(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -60,6 +56,7 @@ func (f *Fetcher) FetchJSON(ctx context.Context, url string) ([]byte, error) {
 	for k, v := range httpx.JSONHeaders() {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("User-Agent", httpx.DefaultUserAgents()[0])
 
 	resp, err := f.client.Do(ctx, req)
 	if err != nil {

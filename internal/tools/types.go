@@ -7,16 +7,13 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/search"
 )
 
-// ToolHandler is a function that handles a specific tool invocation.
 type ToolHandler func(ctx Context) models.ToolResponse
 
-// Context carries all dependencies and the incoming request for a tool handler.
 type Context struct {
 	Req     models.ToolRequest
 	Deps    *Dependencies
 }
 
-// Dependencies holds all shared service instances injected into tool handlers.
 type Dependencies struct {
 	HTTP         *httpx.Client
 	Cache        *cache.Memory
@@ -24,7 +21,6 @@ type Dependencies struct {
 	RootDir      string
 }
 
-// NewDependencies creates the full dependency graph for tool handlers.
 func NewDependencies(rootDir string) *Dependencies {
 	httpClient := httpx.NewClient()
 	memCache := cache.NewMemory(cache.DefaultTTL, cache.CleanupInterval)

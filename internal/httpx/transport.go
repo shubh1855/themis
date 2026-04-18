@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// NewTransport creates an http.Transport tuned for connection reuse and performance.
 func NewTransport() *http.Transport {
 	return &http.Transport{
 		DialContext: (&net.Dialer{

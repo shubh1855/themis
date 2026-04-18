@@ -1,4 +1,3 @@
-// Package tester provides test, lint, benchmark, and coverage execution.
 package tester
 
 import (
@@ -15,7 +14,6 @@ import (
 
 const testTimeout = 120 * time.Second
 
-// RunTests runs the test suite for the detected language/framework in the given directory.
 func RunTests(ctx context.Context, dir string, args ...string) (*models.TestResult, error) {
 	cmd, cmdArgs := detectTestCommand(dir)
 	cmdArgs = append(cmdArgs, args...)
@@ -35,7 +33,6 @@ func RunTests(ctx context.Context, dir string, args ...string) (*models.TestResu
 	}, nil
 }
 
-// RunCommand runs an arbitrary test/lint/benchmark command.
 func RunCommand(ctx context.Context, cmd string, args []string, dir string, timeout time.Duration) (*models.TestResult, error) {
 	if timeout == 0 {
 		timeout = testTimeout

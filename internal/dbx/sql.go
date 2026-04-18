@@ -1,4 +1,3 @@
-// Package dbx provides database helpers with SQLite as the primary backend.
 package dbx
 
 import (
@@ -8,24 +7,21 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // Pure Go SQLite driver
+	_ "modernc.org/sqlite"
 )
 
 const queryTimeout = 30 * time.Second
 
-// DB wraps a sql.DB with helper methods for agent tool use.
 type DB struct {
 	db   *sql.DB
 	path string
 }
 
-// Open opens a SQLite database at the given file path.
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("dbx: open %q: %w", path, err)
 	}
-	// Verify connection
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("dbx: ping %q: %w", path, err)
@@ -33,17 +29,14 @@ func Open(path string) (*DB, error) {
 	return &DB{db: db, path: path}, nil
 }
 
-// Close closes the database connection.
 func (d *DB) Close() error {
 	return d.db.Close()
 }
 
-// Query executes a SQL query and returns rows as maps.
 func (d *DB) Query(ctx context.Context, query string, args ...interface{}) ([]map[string]interface{}, []string, error) {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
-	// Determine if it's a SELECT or a mutating query
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
 	if strings.HasPrefix(trimmed, "SELECT") || strings.HasPrefix(trimmed, "PRAGMA") {
 		return d.queryRows(ctx, query, args...)

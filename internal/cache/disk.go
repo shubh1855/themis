@@ -10,18 +10,15 @@ import (
 	"time"
 )
 
-// diskEntry wraps a cached value with its expiration time for on-disk storage.
 type diskEntry struct {
 	Value     json.RawMessage `json:"value"`
 	ExpiresAt time.Time       `json:"expires_at"`
 }
 
-// Disk provides a simple filesystem-backed cache with TTL support.
 type Disk struct {
 	dir string
 }
 
-// NewDisk creates a new disk cache that stores entries in the given directory.
 func NewDisk(dir string) (*Disk, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("disk cache: %w", err)
@@ -29,7 +26,6 @@ func NewDisk(dir string) (*Disk, error) {
 	return &Disk{dir: dir}, nil
 }
 
-// Get retrieves a value from disk. Returns nil and false if missing or expired.
 func (d *Disk) Get(key string) ([]byte, bool) {
 	path := d.keyPath(key)
 	data, err := os.ReadFile(path)
@@ -51,7 +47,6 @@ func (d *Disk) Get(key string) ([]byte, bool) {
 	return e.Value, true
 }
 
-// Set stores a JSON-serializable value on disk with the given TTL.
 func (d *Disk) Set(key string, value interface{}, ttl time.Duration) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -71,7 +66,6 @@ func (d *Disk) Set(key string, value interface{}, ttl time.Duration) error {
 	return os.WriteFile(d.keyPath(key), data, 0644)
 }
 
-// Delete removes an entry from disk.
 func (d *Disk) Delete(key string) {
 	os.Remove(d.keyPath(key))
 }

@@ -13,13 +13,12 @@ import (
 )
 
 var (
-	addedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
-	removedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red
-	lineNumStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // dark-grey
+	addedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	removedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	lineNumStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	sepStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
 
-// Highlight returns syntax-coloured source using chroma's dracula theme.
 func Highlight(code, filename string) string {
 	lexer := chromaLexers.Match(filename)
 	if lexer == nil {
@@ -49,8 +48,6 @@ func Highlight(code, filename string) string {
 	return buf.String()
 }
 
-// DiffView renders a git-style diff for display in the viewport.
-// oldContent="" means a new file — all lines shown as added (green).
 func DiffView(oldContent, newContent, filename string) string {
 	if strings.TrimSpace(newContent) == "" {
 		return ""
@@ -85,7 +82,6 @@ type diffLine struct {
 	content string
 }
 
-// computeLCSDiff runs a proper LCS-based line diff.
 func computeLCSDiff(old, neu []string) []diffLine {
 	m, n := len(old), len(neu)
 	dp := make([][]int, m+1)

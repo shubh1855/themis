@@ -7,12 +7,10 @@ import (
 	"strings"
 )
 
-// EnvGet retrieves the value of an environment variable.
 func EnvGet(key string) string {
 	return os.Getenv(key)
 }
 
-// EnvSet sets an environment variable for the current process.
 func EnvSet(key, value string) error {
 	if err := os.Setenv(key, value); err != nil {
 		return fmt.Errorf("system: setenv %q: %w", key, err)
@@ -20,7 +18,6 @@ func EnvSet(key, value string) error {
 	return nil
 }
 
-// EnvList returns all environment variables as a sorted map.
 func EnvList() map[string]string {
 	result := make(map[string]string)
 	for _, env := range os.Environ() {
@@ -32,7 +29,6 @@ func EnvList() map[string]string {
 	return result
 }
 
-// EnvKeys returns all environment variable names, sorted.
 func EnvKeys() []string {
 	envs := os.Environ()
 	keys := make([]string, 0, len(envs))

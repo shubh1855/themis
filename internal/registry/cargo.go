@@ -12,20 +12,16 @@ import (
 
 const cratesSearchURL = "https://crates.io/api/v1/crates"
 
-// Cargo implements the Client interface for the crates.io registry.
 type Cargo struct {
 	*BaseClient
 }
 
-// NewCargo creates a crates.io registry client.
 func NewCargo(base *BaseClient) *Cargo {
 	return &Cargo{BaseClient: base}
 }
 
-// Name returns the registry identifier.
 func (c *Cargo) Name() string { return "cargo" }
 
-// Search finds crates matching the query.
 func (c *Cargo) Search(query string, limit int) (*models.PackageSearchResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -71,7 +67,6 @@ func (c *Cargo) Search(query string, limit int) (*models.PackageSearchResult, er
 	return result, nil
 }
 
-// Lookup retrieves metadata for a specific crate.
 func (c *Cargo) Lookup(name string) (*models.PackageInfo, error) {
 	cacheKey := cache.RegistryKey("cargo", name)
 	if cached, ok := c.Cache.Get(cacheKey); ok {

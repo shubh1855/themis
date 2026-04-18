@@ -1,4 +1,3 @@
-// Package files provides filesystem operations with path safety and atomic writes.
 package files
 
 import (
@@ -12,22 +11,18 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/security"
 )
 
-// Manager provides safe filesystem operations rooted at a base directory.
 type Manager struct {
 	Root string
 }
 
-// NewManager creates a file manager rooted at the given directory.
 func NewManager(root string) *Manager {
 	return &Manager{Root: root}
 }
 
-// safePath resolves and validates a path within the root directory.
 func (m *Manager) safePath(path string) (string, error) {
 	return security.SanitizePath(m.Root, path)
 }
 
-// ReadFile reads the entire contents of a file.
 func (m *Manager) ReadFile(path string) (string, error) {
 	p, err := m.safePath(path)
 	if err != nil {
@@ -40,7 +35,6 @@ func (m *Manager) ReadFile(path string) (string, error) {
 	return string(data), nil
 }
 
-// WriteFile writes content to a file atomically by writing to a temp file first.
 func (m *Manager) WriteFile(path, content string) error {
 	p, err := m.safePath(path)
 	if err != nil {
@@ -49,7 +43,6 @@ func (m *Manager) WriteFile(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return fmt.Errorf("files: mkdir: %w", err)
 	}
-	// Atomic write: write to temp, then rename
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
 		return fmt.Errorf("files: write tmp: %w", err)
@@ -61,7 +54,6 @@ func (m *Manager) WriteFile(path, content string) error {
 	return nil
 }
 
-// AppendFile appends content to a file, creating it if necessary.
 func (m *Manager) AppendFile(path, content string) error {
 	p, err := m.safePath(path)
 	if err != nil {
@@ -79,7 +71,6 @@ func (m *Manager) AppendFile(path, content string) error {
 	return err
 }
 
-// EditFile replaces the first occurrence of oldStr with newStr in a file.
 func (m *Manager) EditFile(path, oldStr, newStr string) error {
 	content, err := m.ReadFile(path)
 	if err != nil {
@@ -92,7 +83,6 @@ func (m *Manager) EditFile(path, oldStr, newStr string) error {
 	return m.WriteFile(path, updated)
 }
 
-// MoveFile moves a file from src to dst.
 func (m *Manager) MoveFile(src, dst string) error {
 	s, err := m.safePath(src)
 	if err != nil {
@@ -108,7 +98,6 @@ func (m *Manager) MoveFile(src, dst string) error {
 	return os.Rename(s, d)
 }
 
-// CopyFile copies a file from src to dst.
 func (m *Manager) CopyFile(src, dst string) error {
 	s, err := m.safePath(src)
 	if err != nil {
@@ -137,7 +126,6 @@ func (m *Manager) CopyFile(src, dst string) error {
 	return err
 }
 
-// DeleteFile removes a file.
 func (m *Manager) DeleteFile(path string) error {
 	p, err := m.safePath(path)
 	if err != nil {
@@ -146,7 +134,6 @@ func (m *Manager) DeleteFile(path string) error {
 	return os.Remove(p)
 }
 
-// Mkdir creates a directory and all parents.
 func (m *Manager) Mkdir(path string) error {
 	p, err := m.safePath(path)
 	if err != nil {
@@ -155,7 +142,6 @@ func (m *Manager) Mkdir(path string) error {
 	return os.MkdirAll(p, 0755)
 }
 
-// CreateFile creates a new file; fails if the file already exists.
 func (m *Manager) CreateFile(path, content string) error {
 	p, err := m.safePath(path)
 	if err != nil {
@@ -167,7 +153,6 @@ func (m *Manager) CreateFile(path, content string) error {
 	return m.WriteFile(path, content)
 }
 
-// Exists checks whether a path exists within the root.
 func (m *Manager) Exists(path string) bool {
 	p, err := m.safePath(path)
 	if err != nil {

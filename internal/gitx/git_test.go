@@ -14,7 +14,6 @@ func setupGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	// Initialize git repo
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -33,7 +32,6 @@ func setupGitRepo(t *testing.T) string {
 	run("config", "user.email", "test@test.com")
 	run("config", "user.name", "Test")
 
-	// Create initial commit
 	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test"), 0644)
 	run("add", ".")
 	run("commit", "-m", "initial")
@@ -45,18 +43,15 @@ func TestGitStatus(t *testing.T) {
 	dir := setupGitRepo(t)
 	g := gitx.New(dir)
 
-	// Clean status
 	status, err := g.Status(context.Background())
 	if err != nil {
 		t.Fatalf("status failed: %v", err)
 	}
 
-	// Should be clean after initial commit
 	if status != "" {
 		t.Logf("status output: %q", status)
 	}
 
-	// Create an untracked file
 	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new"), 0644)
 
 	status, err = g.Status(context.Background())

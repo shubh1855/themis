@@ -21,7 +21,6 @@ func testBase(t *testing.T) *registry.BaseClient {
 }
 
 func TestNPMLookup(t *testing.T) {
-	// Create mock npm registry
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{
 			"name":        "express",
@@ -41,7 +40,6 @@ func TestNPMLookup(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// We can't easily override the npm URL in the client, so test the HTTP layer
 	client := httpx.NewClient(httpx.WithSSRFAllowPrivate())
 	body, err := client.GetBody(t.Context(), server.URL+"/express")
 	if err != nil {

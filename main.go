@@ -7,13 +7,14 @@ import (
 	"os/exec"
 	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
-
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	openai "github.com/sashabaranov/go-openai"
 
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/llm"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
@@ -21,97 +22,71 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
 )
 
-// execDoneMsg fires after tea.ExecProcess returns so we can drain the rest of the queue.
-type execDoneMsg struct{ err error }
+
+type reviewOpt int
+
+const (
+	optAccept reviewOpt = iota
+	optReject
+	optAcceptAll
+)
+
+type toolReview struct {
+	req      tools.ToolRequest
+	selected reviewOpt
+}
+
+var reviewLabels = []string{"  Accept  ", "  Reject  ", "  Accept All  "}
+var reviewStyles = []lipgloss.Style{
+	ui.ReviewAcceptStyle, ui.ReviewRejectStyle, ui.ReviewNeutralStyle,
+}
+
 
 type model struct {
 	client   *openai.Client
 	registry *tools.Registry
 	perms    *tools.PermissionManager
+	executor func(string, map[string]interface{}) (string, error)
 
 	viewport viewport.Model
 	input    textarea.Model
 	spinner  spinner.Model
+	help     help.Model
 
-	history []string
-
+	history     []string
 	suggestions []string
 	selectedSug int
 
-	width  int
-	height int
-
-	loading bool
-	running bool
-	quit    bool
-
 	pendingQueue []tools.ToolRequest
+	review       *toolReview
 
-	// Agent orchestration
-	activeAgent        llm.AgentID
-	agentHistory       []openai.ChatCompletionMessage
-	pendingDelegations []llm.DelegationMsg // remaining steps from Athena's plan
-	toolCallAgent      llm.AgentID         // which agent invoked the current tool queue
-	pendingToolResults []string            // accumulated tool outputs to return to agent
+	reactCh     <-chan tea.Msg
+	activeAgent llm.AgentID
+	thinkIdx    int
 
-	// PTY state
+	taskGraph      *ui.TaskGraph
+	activeTaskID   string
+
 	ptyMaster    *os.File
 	ptyCmd       *exec.Cmd
 	ptyCleanup   func()
+	running      bool
 	runOutputIdx int
+
+	width, height int
+	loading       bool
+	quit          bool
 }
 
-var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("205"))
-
-	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	outputStyle = lipgloss.NewStyle().
-			PaddingLeft(1).
-			PaddingRight(1)
-
-	warnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Bold(true)
-
-	borderStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			Padding(0, 1)
-
-	suggestionStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("243")).
-			PaddingLeft(2)
-
-	selectedSuggestionStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("205")).
-				Bold(true).
-				PaddingLeft(2)
-)
-
 func initialModel() model {
-	apiKey := os.Getenv("INFERX_API_KEY")
-
-	cfg := openai.DefaultConfig(apiKey)
-	cfg.BaseURL = "https://litellm-proxy-93ef.onrender.com/v1"
-
-	client := openai.NewClientWithConfig(cfg)
-
 	wd, _ := os.Getwd()
-
 	fs := tools.NewFS(wd)
-	reg := tools.NewRegistry(fs)
-	perms := tools.NewPermissionManager()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = ui.SpinnerStyle
 
 	vp := viewport.New(80, 20)
-	vp.SetContent("")
-
 	ta := textarea.New()
 	ta.Placeholder = "Ask something..."
 	ta.Focus()
@@ -120,14 +95,18 @@ func initialModel() model {
 	ta.ShowLineNumbers = false
 
 	return model{
-		client:      client,
-		registry:    reg,
-		perms:       perms,
+		client:      llm.NewClient(os.Getenv("INFERX_API_KEY")),
+		registry:    tools.NewRegistry(fs),
+		perms:       tools.NewPermissionManager(),
+		executor:    tools.NewReactExecutor(wd),
 		viewport:    vp,
 		input:       ta,
 		spinner:     sp,
+		help:        help.New(),
 		history:     []string{},
 		selectedSug: -1,
+		thinkIdx:    -1,
+		taskGraph:   ui.NewTaskGraph(),
 	}
 }
 
@@ -135,7 +114,7 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(textarea.Blink, m.spinner.Tick)
 }
 
-// extractToolRequests parses all newline-delimited JSON tool calls from a response.
+
 func extractToolRequests(text string) []tools.ToolRequest {
 	var reqs []tools.ToolRequest
 	for _, line := range strings.Split(text, "\n") {
@@ -151,21 +130,29 @@ func extractToolRequests(text string) []tools.ToolRequest {
 	return reqs
 }
 
+func (m *model) renderContent() string {
+	w := m.viewport.Width
+	if w <= 0 {
+		w = 80
+	}
+	return ui.OutputStyle.Copy().Width(w).Render(
+		strings.Join(m.history, "\n\n"))
+}
+
 func (m *model) pushOutput(text string) {
 	m.history = append(m.history, text)
-	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
+	m.viewport.SetContent(m.renderContent())
 	m.viewport.GotoBottom()
 }
 
-// pushAgentOutput adds output prefixed with the agent's styled badge.
 func (m *model) pushAgentOutput(agent llm.AgentID, text string) {
-	emoji := llm.AgentEmoji(agent)
-	badge := ui.AgentStyle(string(agent)).Render(emoji + " " + string(agent))
+	badge := ui.AgentStyle(string(agent)).Render(
+		llm.AgentEmoji(agent) + " " + string(agent))
 	m.pushOutput(badge + " › " + text)
 }
 
 func (m *model) updateViewport() {
-	m.viewport.SetContent(ui.OutputStyle.Render(strings.Join(m.history, "\n\n")))
+	m.viewport.SetContent(m.renderContent())
 	m.viewport.GotoBottom()
 }
 
@@ -178,15 +165,54 @@ func (m *model) resizeView() {
 	if h < 1 {
 		h = 1
 	}
-	m.viewport.Width = m.width - 4
+	mainW := m.width * 80 / 100
+	if mainW < 40 {
+		mainW = m.width - 4
+	}
+	m.viewport.Width = mainW - 4
 	m.viewport.Height = h
 	m.input.SetWidth(m.width - 6)
+	m.help.Width = m.width
 }
+
+
+func (m *model) startThinkBlock(agent llm.AgentID) {
+	badge := ui.AgentStyle(string(agent)).Render(
+		llm.AgentEmoji(agent) + " " + string(agent))
+	header := badge + " " + ui.ThinkStyle.Render("thinking...")
+	m.history = append(m.history, header+"\n")
+	m.thinkIdx = len(m.history) - 1
+	m.updateViewport()
+}
+
+func (m *model) appendToThink(chunk string) {
+	if m.thinkIdx >= 0 && m.thinkIdx < len(m.history) {
+		clean := chunk
+		clean = strings.ReplaceAll(clean, "THOUGHT:", "")
+		clean = strings.ReplaceAll(clean, "THOUGHT :", "")
+		clean = strings.ReplaceAll(clean, "ACTION:", "")
+		clean = strings.ReplaceAll(clean, "ACTION :", "")
+		m.history[m.thinkIdx] += ui.ThinkStyle.Render(clean)
+		m.updateViewport()
+	}
+}
+
+func (m *model) endThinkBlock() {
+	m.thinkIdx = -1
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
 
 func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	master, readCmd, err := apptty.Start(cmd)
 	if err != nil {
-		m.pushOutput("[run] failed to start: " + err.Error())
+		m.pushOutput("[run] failed: " + err.Error())
 		if cleanup != nil {
 			cleanup()
 		}
@@ -196,69 +222,57 @@ func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	m.ptyCmd = cmd
 	m.ptyCleanup = cleanup
 	m.running = true
-
-	m.history = append(m.history, warnStyle.Render("▶ running")+"  (ctrl+d → EOF)\n")
+	m.history = append(m.history, ui.WarnStyle.Render("▶ running")+"  (ctrl+d → EOF)\n")
 	m.runOutputIdx = len(m.history) - 1
-	m.viewport.SetContent(outputStyle.Render(strings.Join(m.history, "\n\n")))
-	m.viewport.GotoBottom()
-
+	m.updateViewport()
 	return readCmd
 }
 
-// drainQueue executes tools from the front of the queue until it's empty,
-// a permission prompt is needed, or an interactive run_file is encountered.
 func (m *model) drainQueue() tea.Cmd {
 	for len(m.pendingQueue) > 0 {
 		req := m.pendingQueue[0]
-
-		// delegate_task: any agent can hand off work to another agent.
-		if req.Tool == "delegate_task" {
-			m.pendingQueue = m.pendingQueue[1:]
-			agentID := llm.ResolveAgentName(req.Agent)
-			if agentID == "" {
-				m.pushOutput("[delegate_task] unknown agent: " + req.Agent)
-				continue
-			}
-			next := llm.DelegationMsg{Target: agentID, Task: req.Content, Context: ""}
-			return func() tea.Msg { return next }
-		}
-
-		// Only gate destructive/side-effecting tools; read_file and mkdir run freely.
-		if tools.NeedsReview(req.Tool) && m.perms.NeedsPrompt() {
-			return nil // permission modal will show for this tool
+		if tools.NeedsReview(req.Tool) && !m.perms.IsGloballyAllowed() {
+			label := ui.ToolLabelStyle.Render("  "+req.Tool) + "  " + ui.StatusStyle.Render(req.Path)
+			preview := m.registry.Preview(req)
+			m.pushOutput(label + "\n" + preview)
+			m.review = &toolReview{req: req, selected: optAccept}
+			return nil
 		}
 		m.pendingQueue = m.pendingQueue[1:]
-
 		res := m.registry.Execute(req)
-
 		if res.ExecCmd != nil {
 			return m.startPTY(res.ExecCmd, res.Cleanup)
 		}
-
-		label := req.Tool
-		if req.Path != "" {
-			label += " " + req.Path
+		if res.Output != "" {
+			m.pushOutput("[tool] " + res.Output)
 		}
-		if req.Key != "" {
-			label += " " + req.Key
-		}
-		m.pendingToolResults = append(m.pendingToolResults,
-			fmt.Sprintf("[%s] %s", label, res.Output))
-		m.pushOutput("[tool] " + res.Output)
 	}
+	return nil
+}
 
-	// Queue fully drained — send accumulated tool outputs back to the invoking agent.
-	if len(m.pendingToolResults) > 0 && m.toolCallAgent != "" {
-		results := m.pendingToolResults
-		agent := m.toolCallAgent
-		history := m.agentHistory
-		m.pendingToolResults = nil
-		m.loading = true
-		return llm.AskAgentWithResults(m.client, agent, results, history)
+func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
+	req := m.review.req
+	m.review = nil
+	m.pendingQueue = m.pendingQueue[1:]
+	switch opt {
+	case optReject:
+		m.pushOutput(ui.ReviewRejectStyle.Render("✗ rejected: " + req.Tool + " " + req.Path))
+		return m.drainQueue()
+	case optAcceptAll:
+		m.perms.Resolve(tools.AllowAlways)
+		fallthrough
+	case optAccept:
+		res := m.registry.Execute(req)
+		if res.ExecCmd != nil {
+			return m.startPTY(res.ExecCmd, res.Cleanup)
+		}
+		m.pushOutput(ui.ReviewAcceptStyle.Render("✓ " + res.Output))
+		return m.drainQueue()
 	}
 
 	return nil
 }
+
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -299,8 +313,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case apptty.OutputMsg:
 		if m.runOutputIdx < len(m.history) {
 			m.history[m.runOutputIdx] += string(msg)
-			m.viewport.SetContent(outputStyle.Render(strings.Join(m.history, "\n\n")))
-			m.viewport.GotoBottom()
+			m.updateViewport()
 		}
 		return m, apptty.ReadOutput(m.ptyMaster)
 
@@ -319,38 +332,64 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.running = false
 		if m.runOutputIdx < len(m.history) {
-			m.history[m.runOutputIdx] += statusStyle.Render("\n▶ done")
-			m.viewport.SetContent(outputStyle.Render(strings.Join(m.history, "\n\n")))
-			m.viewport.GotoBottom()
+			m.history[m.runOutputIdx] += ui.StatusStyle.Render("\n▶ done")
+			m.updateViewport()
 		}
 		return m, m.drainQueue()
 
-	// ── Agent delegation: Zeus delegates to a sub-agent ──────────────────
-	case llm.DelegationMsg:
-		m.loading = true
-		m.activeAgent = msg.Target
-		m.agentHistory = nil
-		delegateText := fmt.Sprintf("delegating to %s %s: %s",
-			llm.AgentEmoji(msg.Target), string(msg.Target), msg.Task)
-		m.pushAgentOutput(llm.AgentZeus, ui.AgentDelegateStyle.Render(delegateText))
-		return m, tea.Batch(
-			llm.AskAgent(m.client, msg.Target, msg.Task, msg.Context, nil),
-			m.spinner.Tick,
-		)
-
-	// ── Agent response ───────────────────────────────────────────────────
-	case llm.ResponseMsg:
-		m.loading = false
-		agent := msg.Agent
-		if agent == "" {
-			agent = llm.AgentZeus
+	case llm.ThinkChunkMsg:
+		if m.thinkIdx < 0 {
+			m.startThinkBlock(msg.Agent)
 		}
-		m.activeAgent = agent
-		m.agentHistory = msg.History
+		m.activeAgent = msg.Agent
+		m.appendToThink(msg.Chunk)
+		return m, llm.WaitReact(m.reactCh)
 
-		if msg.Err != nil {
-			m.pushAgentOutput(agent, "Error: "+msg.Err.Error())
-			return m, nil
+	case llm.ToolCallMsg:
+		m.endThinkBlock()
+		badge := ui.AgentStyle(string(msg.Agent)).Render(llm.AgentEmoji(msg.Agent))
+		m.pushOutput(badge + " " + ui.ToolExecStyle.Render("🔧 "+msg.Tool) +
+			"  " + ui.StatusStyle.Render(truncate(msg.Display, 80)))
+		if tid := m.activeTaskID; tid != "" {
+			m.taskGraph.AddToolCall(tid, msg.Tool+": "+truncate(msg.Display, 40))
+		}
+		return m, llm.WaitReact(m.reactCh)
+
+	case llm.ToolResultMsg:
+		m.pushOutput(ui.ObservationStyle.Render("📋 " + truncate(msg.Result, 500)))
+		m.startThinkBlock(msg.Agent)
+		return m, llm.WaitReact(m.reactCh)
+
+	case llm.ReactDelegateMsg:
+		m.endThinkBlock()
+		m.pushAgentOutput(msg.From,
+			ui.AgentDelegateStyle.Render(fmt.Sprintf("→ delegating to %s %s",
+				llm.AgentEmoji(msg.Target), string(msg.Target))))
+		m.pushOutput(ui.ThinkStyle.Render("  task: " + msg.Task))
+
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskDone)
+		}
+		parentID := m.activeTaskID
+		if parentID == "" && m.taskGraph.Root != nil {
+			parentID = m.taskGraph.Root.ID
+		}
+		childID := m.taskGraph.AddChild(parentID, string(msg.Target), truncate(msg.Task, 50))
+		m.taskGraph.SetStatus(childID, ui.TaskRunning)
+		m.activeTaskID = childID
+
+		m.activeAgent = msg.Target
+		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, m.executor)
+		m.reactCh = ch
+		return m, tea.Batch(reactCmd, m.spinner.Tick)
+
+	case llm.ReactAnswerMsg:
+		m.endThinkBlock()
+		m.loading = false
+		m.reactCh = nil
+
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskDone)
 		}
 
 		text := strings.TrimSpace(msg.Text)
@@ -364,258 +403,242 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 		if reqs := extractToolRequests(text); len(reqs) > 0 {
-			m.pushAgentOutput(agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
-			m.toolCallAgent = agent // track so results can be sent back
+			m.pushAgentOutput(msg.Agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
 			m.pendingQueue = reqs
 			return m, m.drainQueue()
 		}
-
-		// If Athena returned a structured plan, queue ALL delegations — not just the first.
-		if agent == llm.AgentAthena {
-			if plan := llm.ParseAthenaPlan(text); plan != nil {
-				if text != "" {
-					m.pushAgentOutput(agent, text)
-				}
-				delegations := llm.DispatchPlanTasks(plan)
-				if len(delegations) > 0 {
-					m.pendingDelegations = delegations[1:]
-					m.loading = true
-					first := delegations[0]
-					return m, func() tea.Msg { return first }
-				}
-				return m, nil
-			}
-		}
-
-		// Agent is done (no more tool calls) — show its response.
-		m.toolCallAgent = ""
 		if text != "" {
-			m.pushAgentOutput(agent, text)
+			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(text))
 		}
 
-		// Advance to the next step in the active plan if any remain.
-		if len(m.pendingDelegations) > 0 {
-			next := m.pendingDelegations[0]
-			m.pendingDelegations = m.pendingDelegations[1:]
-			m.loading = true
-			m.agentHistory = nil
-			return m, func() tea.Msg { return next }
+	case llm.ReactDoneMsg:
+		m.endThinkBlock()
+		m.loading = false
+		m.reactCh = nil
+
+	case llm.ReactErrorMsg:
+		m.endThinkBlock()
+		m.loading = false
+		m.reactCh = nil
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskFailed)
 		}
+		m.pushAgentOutput(msg.Agent, "Error: "+msg.Err.Error())
 
 	case tea.KeyMsg:
-
 		if m.running && m.ptyMaster != nil {
 			m.ptyMaster.Write(apptty.KeyToBytes(msg.String()))
 			return m, nil
 		}
 
-		// permission modal
-		if len(m.pendingQueue) > 0 {
+		if m.review != nil {
 			switch msg.String() {
+			case "left", "h", "shift+tab":
+				if m.review.selected > 0 {
+					m.review.selected--
+				}
+			case "right", "l", "tab":
+				if int(m.review.selected) < len(reviewLabels)-1 {
+					m.review.selected++
+				}
+			case "enter":
+				return m, m.confirmReview(m.review.selected)
 			case "y":
-				req := m.pendingQueue[0]
-				m.pendingQueue = m.pendingQueue[1:]
-				res := m.registry.Execute(req)
-				if res.ExecCmd != nil {
-					return m, m.startPTY(res.ExecCmd, res.Cleanup)
-				}
-				m.pushOutput("[tool] " + res.Output)
-				if m.toolCallAgent != "" {
-					label := req.Tool
-					if req.Path != "" {
-						label += " " + req.Path
-					}
-					m.pendingToolResults = append(m.pendingToolResults,
-						fmt.Sprintf("[%s] %s", label, res.Output))
-				}
-				return m, m.drainQueue()
-
-			case "a":
-				m.perms.Resolve(tools.AllowAlways)
-				return m, m.drainQueue()
-
+				return m, m.confirmReview(optAccept)
 			case "n", "esc":
-				m.pushOutput("[tool] permission denied")
-				m.pendingQueue = nil
-				m.pendingDelegations = nil
-				m.pendingToolResults = nil
-				m.toolCallAgent = ""
+				return m, m.confirmReview(optReject)
+			case "a":
+				return m, m.confirmReview(optAcceptAll)
 			}
+			return m, nil
+		}
 
+		if key.Matches(msg, ui.Keys.Quit) {
+			m.quit = true
+			return m, tea.Quit
+		}
+
+		switch msg.String() {
+		case "pgup", "ctrl+b":
+			m.viewport.HalfViewUp()
+			return m, nil
+		case "pgdown", "ctrl+f":
+			m.viewport.HalfViewDown()
 			return m, nil
 		}
 
 		switch msg.String() {
-
-		case "ctrl+c", "q":
-			m.quit = true
-			return m, tea.Quit
-
-		case "tab":
+		case "up":
 			if len(m.suggestions) > 0 {
-				m.selectedSug++
-				if m.selectedSug >= len(m.suggestions) {
-					m.selectedSug = 0
-				}
-				if m.selectedSug >= 0 && m.selectedSug < len(m.suggestions) {
-					m.input.SetValue(m.suggestions[m.selectedSug])
-					m.input.CursorEnd()
-				}
-			}
-			return m, nil
-
-		case "shift+tab":
-			if len(m.suggestions) > 0 {
-				if m.selectedSug == -1 {
+				if m.selectedSug <= 0 {
 					m.selectedSug = len(m.suggestions) - 1
 				} else {
 					m.selectedSug--
-					if m.selectedSug < 0 {
-						m.selectedSug = len(m.suggestions) - 1
-					}
 				}
-				if m.selectedSug >= 0 && m.selectedSug < len(m.suggestions) {
-					m.input.SetValue(m.suggestions[m.selectedSug])
-					m.input.CursorEnd()
-				}
+				m.input.SetValue(m.suggestions[m.selectedSug])
+				m.input.CursorEnd()
+				return m, nil
 			}
+			m.viewport.LineUp(1)
 			return m, nil
+		case "down":
+			if len(m.suggestions) > 0 {
+				m.selectedSug = (m.selectedSug + 1) % len(m.suggestions)
+				m.input.SetValue(m.suggestions[m.selectedSug])
+				m.input.CursorEnd()
+				return m, nil
+			}
+			m.viewport.LineDown(1)
+			return m, nil
+		case "tab":
+			if len(m.suggestions) > 0 {
+				m.selectedSug = (m.selectedSug + 1) % len(m.suggestions)
+				m.input.SetValue(m.suggestions[m.selectedSug])
+				m.input.CursorEnd()
+				return m, nil
+			}
+		case "shift+tab":
+			if len(m.suggestions) > 0 {
+				if m.selectedSug <= 0 {
+					m.selectedSug = len(m.suggestions) - 1
+				} else {
+					m.selectedSug--
+				}
+				m.input.SetValue(m.suggestions[m.selectedSug])
+				m.input.CursorEnd()
+				return m, nil
+			}
+		}
 
-		case "enter":
+		if key.Matches(msg, ui.Keys.Submit) {
 			if m.loading {
 				return m, nil
 			}
-
 			userPrompt := strings.TrimSpace(m.input.Value())
 			if userPrompt == "" {
 				return m, nil
 			}
-
 			m.pushOutput("You > " + userPrompt)
 			m.input.SetValue("")
 			m.loading = true
 			m.activeAgent = llm.AgentZeus
-			m.agentHistory = nil
 			m.suggestions = nil
 			m.selectedSug = -1
 			m.resizeView()
 
-			return m, llm.AskWithOrchestration(m.client, userPrompt)
+			m.taskGraph = ui.NewTaskGraph()
+			rootID := m.taskGraph.AddRoot("Zeus", truncate(userPrompt, 50))
+			m.activeTaskID = rootID
+
+			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, userPrompt, "", m.executor)
+			m.reactCh = ch
+			return m, tea.Batch(reactCmd, m.spinner.Tick)
 		}
 
-		m.viewport, _ = m.viewport.Update(msg)
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
-
 	}
 
 	return m, nil
 }
+
 
 func (m model) View() string {
 	if m.quit {
 		return ""
 	}
 
-	header := titleStyle.Render("Themis")
-
-	// Status bar text with active agent indicator
 	status := "Ready"
 	if m.loading {
 		agentBadge := ""
 		if m.activeAgent != "" {
-			emoji := llm.AgentEmoji(m.activeAgent)
 			agentBadge = ui.AgentStyle(string(m.activeAgent)).Render(
-				emoji+" "+string(m.activeAgent)) + " "
+				llm.AgentEmoji(m.activeAgent)+" "+string(m.activeAgent)) + " "
 		}
 		status = m.spinner.View() + " " + agentBadge + "Thinking..."
 	} else if m.running {
-		status = "Running..."
+		status = m.spinner.View() + " Running..."
 	}
 
-	var bodyContent string
-	if len(m.pendingQueue) > 0 {
-		front := m.pendingQueue[0]
-		remaining := ""
-		if len(m.pendingQueue) > 1 {
-			remaining = fmt.Sprintf("  (+%d more queued)", len(m.pendingQueue)-1)
-		}
-		modal := warnStyle.Render("Permission Required") + "\n\n" +
-			fmt.Sprintf("Tool: %s\nPath: %s%s\n\n[y] allow once   [a] always   [n] deny",
-				front.Tool,
-				front.Path,
-				remaining,
-			)
+	mainW := m.width * 80 / 100
+	graphW := m.width - mainW
+	if mainW < 40 {
+		mainW = m.width
+		graphW = 0
+	}
 
-		modalBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("214")).
-			Padding(1, 4).
-			Render(modal)
+	bodyContent := lipgloss.NewStyle().
+		Height(m.viewport.Height).
+		MaxHeight(m.viewport.Height).
+		Render(m.viewport.View())
+	leftPanel := ui.BorderStyle.Copy().Width(mainW - 2).Render(
+		ui.TitleStyle.Render("Themis") + "\n\n" + bodyContent)
 
-		bodyContent = lipgloss.Place(
-			m.viewport.Width, m.viewport.Height,
-			lipgloss.Center, lipgloss.Center,
-			modalBox,
-		)
+	var topRow string
+	if graphW > 8 {
+		graphH := m.viewport.Height + 4
+		rightPanel := m.taskGraph.Render(graphW, graphH)
+		topRow = lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 	} else {
-		bodyContent = lipgloss.NewStyle().
-			Height(m.viewport.Height).
-			MaxHeight(m.viewport.Height).
-			Render(m.viewport.View())
+		topRow = leftPanel
 	}
-
-	body := borderStyle.Render(
-		header + "\n\n" +
-			bodyContent,
-	)
 
 	var sugView string
 	if len(m.suggestions) > 0 {
-		var lines []string
+		lines := make([]string, len(m.suggestions))
 		for i, s := range m.suggestions {
-			prefix := "[ ] "
 			if i == m.selectedSug {
-				prefix = "[*] "
-				lines = append(lines, selectedSuggestionStyle.Render(prefix+s))
+				lines[i] = ui.SelectedSuggestionStyle.Render("[*] " + s)
 			} else {
-				lines = append(lines, suggestionStyle.Render(prefix+s))
+				lines[i] = ui.SuggestionStyle.Render("[ ] " + s)
 			}
 		}
-
-		sugView = lipgloss.NewStyle().
-			Height(len(m.suggestions)).
-			MaxHeight(len(m.suggestions)).
-			Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+		sugView = lipgloss.JoinVertical(lipgloss.Left, lines...)
 	}
 
-	footer := borderStyle.Render(m.input.View())
+	var footer string
+	if m.review != nil {
+		footer = m.reviewFooter()
+	} else {
+		footer = ui.BorderStyle.Render(m.input.View())
+	}
 
+	helpBar := ui.StatusStyle.Render(status + "   " + m.help.View(ui.Keys))
+
+	parts := []string{topRow}
 	if sugView != "" {
-		return lipgloss.JoinVertical(
-			lipgloss.Left,
-			body,
-			sugView,
-			footer,
-			statusStyle.Render(status+"   (q to quit)"),
-		)
+		parts = append(parts, sugView)
 	}
+	parts = append(parts, footer, helpBar)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
 
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		body,
-		footer,
-		statusStyle.Render(status+"   (q to quit)"),
-	)
+func (m model) reviewFooter() string {
+	var opts []string
+	for i, label := range reviewLabels {
+		s := reviewStyles[i].Render(label)
+		if reviewOpt(i) == m.review.selected {
+			switch reviewOpt(i) {
+			case optAccept:
+				s = ui.ReviewSelectedBg.Copy().Foreground(lipgloss.Color("2")).Render("❯" + label)
+			case optReject:
+				s = ui.ReviewSelectedBg.Copy().Foreground(lipgloss.Color("1")).Render("❯" + label)
+			case optAcceptAll:
+				s = ui.ReviewSelectedBg.Copy().Foreground(lipgloss.Color("33")).Render("❯" + label)
+			}
+		}
+		opts = append(opts, s)
+	}
+	hint := ui.ReviewHintStyle.Render("  ←→ navigate   enter confirm   y/n/a shortcut")
+	return ui.BorderStyle.Render(strings.Join(opts, " ") + "\n" + hint)
 }
 
 func main() {
 	p := tea.NewProgram(
 		initialModel(),
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(), // Or tea.WithMouseAllMotion() but cell motion captures mouse clicks cleanly
+		tea.WithMouseCellMotion(),
 	)
-
 	if _, err := p.Run(); err != nil {
 		fmt.Println("error:", err)
 	}

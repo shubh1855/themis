@@ -4,7 +4,6 @@ import (
 	"strings"
 )
 
-// Metadata holds extracted page metadata.
 type Metadata struct {
 	Title       string            `json:"title"`
 	Description string            `json:"description,omitempty"`
@@ -13,22 +12,17 @@ type Metadata struct {
 	Headings    []string          `json:"headings,omitempty"`
 }
 
-// ExtractMetadata extracts title, meta tags, links, and headings from HTML.
 func ExtractMetadata(html string) *Metadata {
 	m := &Metadata{
 		Meta: make(map[string]string),
 	}
 
-	// Extract title
 	m.Title = extractSimpleTag(html, "title")
 
-	// Extract meta tags
 	extractMetaTags(html, m)
 
-	// Extract links
 	m.Links = extractLinks(html)
 
-	// Extract headings
 	m.Headings = extractHeadings(html)
 
 	return m

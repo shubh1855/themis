@@ -6,7 +6,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
 )
 
-// RunCoverage generates a test coverage report for the project.
 func RunCoverage(ctx context.Context, dir string, args ...string) (*models.TestResult, error) {
 	cmd := "go"
 	cmdArgs := []string{"test", "-cover", "-coverprofile=coverage.out", "./..."}

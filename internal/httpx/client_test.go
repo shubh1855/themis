@@ -64,7 +64,7 @@ func TestRetrier_ContextCancellation(t *testing.T) {
 }
 
 func TestRateLimiter_Basic(t *testing.T) {
-	limiter := httpx.NewHostLimiter(100) // High RPS to avoid slow test
+	limiter := httpx.NewHostLimiter(100)
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
@@ -75,15 +75,13 @@ func TestRateLimiter_Basic(t *testing.T) {
 }
 
 func TestRateLimiter_ContextCancellation(t *testing.T) {
-	limiter := httpx.NewHostLimiter(0.001) // Very slow
+	limiter := httpx.NewHostLimiter(0.001)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	// First call uses the initial token
 	_ = limiter.Wait(ctx, "slow.example.com")
 
-	// Second call should be rate limited and fail on context timeout
 	err := limiter.Wait(ctx, "slow.example.com")
 	if err == nil {
 		t.Error("expected context deadline error")
