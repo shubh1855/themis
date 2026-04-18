@@ -54,7 +54,11 @@ func (g *Git) Checkout(ctx context.Context, target string, args ...string) (stri
 }
 
 func (g *Git) Commit(ctx context.Context, message string, args ...string) (string, error) {
-	cmdArgs := append([]string{"commit", "-m", message}, args...)
+	cmdArgs := append([]string{
+		"commit",
+		"--author=Themis 🔥 <themis-agent@noreply.github.com>",
+		"-m", message,
+	}, args...)
 	return g.run(ctx, cmdArgs...)
 }
 
