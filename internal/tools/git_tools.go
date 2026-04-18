@@ -15,7 +15,6 @@ func gitRepo(ctx Context) *gitx.Git {
 	return gitx.New(dir)
 }
 
-// HandleGitStatus returns the git status of the working directory.
 func HandleGitStatus(ctx Context) models.ToolResponse {
 	out, err := gitRepo(ctx).Status(context.Background())
 	if err != nil {
@@ -24,7 +23,6 @@ func HandleGitStatus(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(models.GitResult{Output: out})
 }
 
-// HandleGitDiff returns the git diff output.
 func HandleGitDiff(ctx Context) models.ToolResponse {
 	out, err := gitRepo(ctx).Diff(context.Background())
 	if err != nil {
@@ -33,7 +31,6 @@ func HandleGitDiff(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(models.GitResult{Output: out})
 }
 
-// HandleGitLog returns recent git log entries.
 func HandleGitLog(ctx Context) models.ToolResponse {
 	n := models.ArgInt(ctx.Req.Args, "count", 10)
 	out, err := gitRepo(ctx).Log(context.Background(), n)
@@ -43,7 +40,6 @@ func HandleGitLog(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(models.GitResult{Output: out})
 }
 
-// HandleGitBranch lists or creates branches.
 func HandleGitBranch(ctx Context) models.ToolResponse {
 	name := models.ArgString(ctx.Req.Args, "name")
 	var args []string
@@ -58,7 +54,6 @@ func HandleGitBranch(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(models.GitResult{Output: out})
 }
 
-// HandleGitCheckout switches branches.
 func HandleGitCheckout(ctx Context) models.ToolResponse {
 	target := models.ArgString(ctx.Req.Args, "target")
 	if target == "" {
@@ -72,14 +67,12 @@ func HandleGitCheckout(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(models.GitResult{Output: out})
 }
 
-// HandleGitCommit creates a commit with the given message.
 func HandleGitCommit(ctx Context) models.ToolResponse {
 	message := models.ArgString(ctx.Req.Args, "message")
 	if message == "" {
 		return models.ErrorResponse("git_commit: missing 'message' argument")
 	}
 
-	// Auto-add if requested
 	if models.ArgBool(ctx.Req.Args, "add_all") {
 		if _, err := gitRepo(ctx).Add(context.Background(), "-A"); err != nil {
 			return models.ErrorResponsef("git_commit: add: %v", err)
@@ -93,7 +86,6 @@ func HandleGitCommit(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(models.GitResult{Output: out})
 }
 
-// HandleGitClone clones a repository.
 func HandleGitClone(ctx Context) models.ToolResponse {
 	url := models.ArgString(ctx.Req.Args, "url")
 	dir := models.ArgString(ctx.Req.Args, "dir")

@@ -6,7 +6,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
 )
 
-// RunLinter runs a linter or format check in the given directory.
 func RunLinter(ctx context.Context, dir string, linter string, args ...string) (*models.TestResult, error) {
 	if linter == "" {
 		linter = detectLinter(dir)

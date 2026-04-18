@@ -9,7 +9,6 @@ func registryBase(ctx Context) *registry.BaseClient {
 	return registry.NewBaseClient(ctx.Deps.HTTP, ctx.Deps.Cache)
 }
 
-// HandleNPMSearch searches the npm registry.
 func HandleNPMSearch(ctx Context) models.ToolResponse {
 	query := models.ArgString(ctx.Req.Args, "query")
 	if query == "" {
@@ -25,7 +24,6 @@ func HandleNPMSearch(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleNPMLookup retrieves metadata for a specific npm package.
 func HandleNPMLookup(ctx Context) models.ToolResponse {
 	name := models.ArgString(ctx.Req.Args, "name")
 	if name == "" {
@@ -40,7 +38,6 @@ func HandleNPMLookup(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(info)
 }
 
-// HandlePipSearch searches the PyPI registry.
 func HandlePipSearch(ctx Context) models.ToolResponse {
 	query := models.ArgString(ctx.Req.Args, "query")
 	if query == "" {
@@ -56,7 +53,6 @@ func HandlePipSearch(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandlePipLookup retrieves metadata for a specific PyPI package.
 func HandlePipLookup(ctx Context) models.ToolResponse {
 	name := models.ArgString(ctx.Req.Args, "name")
 	if name == "" {
@@ -71,7 +67,6 @@ func HandlePipLookup(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(info)
 }
 
-// HandleCargoSearch searches the crates.io registry.
 func HandleCargoSearch(ctx Context) models.ToolResponse {
 	query := models.ArgString(ctx.Req.Args, "query")
 	if query == "" {
@@ -87,7 +82,6 @@ func HandleCargoSearch(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleCrateLookup retrieves metadata for a specific crate.
 func HandleCrateLookup(ctx Context) models.ToolResponse {
 	name := models.ArgString(ctx.Req.Args, "name")
 	if name == "" {
@@ -102,7 +96,6 @@ func HandleCrateLookup(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(info)
 }
 
-// HandleGoSearch searches for Go modules.
 func HandleGoSearch(ctx Context) models.ToolResponse {
 	query := models.ArgString(ctx.Req.Args, "query")
 	if query == "" {
@@ -118,7 +111,6 @@ func HandleGoSearch(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(result)
 }
 
-// HandleGoLookup retrieves metadata for a specific Go module.
 func HandleGoLookup(ctx Context) models.ToolResponse {
 	name := models.ArgString(ctx.Req.Args, "name")
 	if name == "" {

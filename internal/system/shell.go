@@ -1,4 +1,3 @@
-// Package system provides shell execution and process management utilities.
 package system
 
 import (
@@ -15,13 +14,10 @@ import (
 )
 
 const (
-	// DefaultCmdTimeout is the default timeout for command execution.
 	DefaultCmdTimeout = 60 * time.Second
-	// MaxOutputSize limits captured output to 1MB.
 	MaxOutputSize = 1 * 1024 * 1024
 )
 
-// ShellKind represents the type of shell to use.
 type ShellKind string
 
 const (
@@ -31,7 +27,6 @@ const (
 	ShellSh   ShellKind = "sh"
 )
 
-// DetectShell reads $SHELL and returns the shell kind and binary path.
 func DetectShell() (ShellKind, string) {
 	shellPath := os.Getenv("SHELL")
 	if shellPath == "" {
@@ -50,7 +45,6 @@ func DetectShell() (ShellKind, string) {
 	}
 }
 
-// RunCmd executes a command with a timeout and returns the result.
 func RunCmd(ctx context.Context, command string, args []string, dir string, timeout time.Duration) (*models.ProcessResult, error) {
 	if timeout == 0 {
 		timeout = DefaultCmdTimeout
@@ -82,7 +76,6 @@ func RunCmd(ctx context.Context, command string, args []string, dir string, time
 		if ctx.Err() == context.DeadlineExceeded {
 			return result, fmt.Errorf("system: command timed out after %v", timeout)
 		}
-		// Non-zero exit is not an error for us, just record the exit code
 		if _, ok := err.(*exec.ExitError); ok {
 			return result, nil
 		}
@@ -92,7 +85,6 @@ func RunCmd(ctx context.Context, command string, args []string, dir string, time
 	return result, nil
 }
 
-// RunShellCmd executes a command string through the user's shell.
 func RunShellCmd(ctx context.Context, cmdStr, dir string, timeout time.Duration) (*models.ProcessResult, error) {
 	_, shellBin := DetectShell()
 	return RunCmd(ctx, shellBin, []string{"-c", cmdStr}, dir, timeout)

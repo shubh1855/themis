@@ -23,7 +23,6 @@ type ToolRequest struct {
 type ToolResult struct {
 	Success bool
 	Output  string
-	// Non-nil for run_file: caller must start this via tty.Start.
 	ExecCmd *exec.Cmd
 	Cleanup func()
 }
@@ -37,8 +36,6 @@ func NewRegistry(fs *FS) *Registry {
 	return &Registry{FS: fs, Memory: make(map[string]string)}
 }
 
-// NeedsReview returns true for tools that modify state and should show a
-// preview + confirmation before executing.
 func NeedsReview(tool string) bool {
 	switch tool {
 	case "create_file", "write_file", "append_file", "edit_file", "run_file":
@@ -47,8 +44,6 @@ func NeedsReview(tool string) bool {
 	return false
 }
 
-// Preview computes a diff/preview for a tool request without executing it.
-// Returns an empty string for tools that have no meaningful preview.
 func (r *Registry) Preview(req ToolRequest) string {
 	switch req.Tool {
 	case "create_file":
@@ -72,8 +67,6 @@ func (r *Registry) Preview(req ToolRequest) string {
 	return ""
 }
 
-// Execute runs the tool and returns the result.
-// For file-writing tools the diff was already shown in Preview, so Output is brief.
 func (r *Registry) Execute(req ToolRequest) ToolResult {
 	switch req.Tool {
 

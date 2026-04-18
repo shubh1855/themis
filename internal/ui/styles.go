@@ -28,7 +28,6 @@ var (
 
 	SpinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
-	// Review option styles
 	ReviewAcceptStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("2")).
 				Bold(true).
@@ -58,36 +57,33 @@ var (
 			Foreground(lipgloss.Color("205")).
 			Bold(true)
 
-	// ── Agent styles ─────────────────────────────────────────────────────
-
 	AgentZeusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("226")).Bold(true) // gold/yellow
+			Foreground(lipgloss.Color("226")).Bold(true)
 
 	AgentAthenaStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("75")).Bold(true) // blue
+				Foreground(lipgloss.Color("75")).Bold(true)
 
 	AgentHephaestusStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("208")).Bold(true) // orange
+				Foreground(lipgloss.Color("208")).Bold(true)
 
 	AgentApolloStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("220")).Bold(true) // sun yellow
+				Foreground(lipgloss.Color("220")).Bold(true)
 
 	AgentHermesStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("158")).Bold(true) // teal/green
+				Foreground(lipgloss.Color("158")).Bold(true)
 
 	AgentAresStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).Bold(true) // red
+			Foreground(lipgloss.Color("196")).Bold(true)
 
 	AgentDelegateStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("141")).
-				Italic(true) // purple, delegating indicator
+				Italic(true)
 
 	AgentBadgeStyle = lipgloss.NewStyle().
 			Bold(true).
 			PaddingLeft(1).PaddingRight(1)
 )
 
-// AgentStyle returns the color style for a given agent name.
 func AgentStyle(name string) lipgloss.Style {
 	switch name {
 	case "Zeus":

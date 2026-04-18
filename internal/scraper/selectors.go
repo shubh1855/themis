@@ -4,15 +4,11 @@ import (
 	"strings"
 )
 
-// SelectorResult holds the extracted content for a CSS selector.
 type SelectorResult struct {
 	Selector string   `json:"selector"`
 	Matches  []string `json:"matches"`
 }
 
-// ExtractBySelector extracts text content matching simple tag or class selectors.
-// Supports: tag names (e.g., "h1"), class selectors (e.g., ".title"),
-// and ID selectors (e.g., "#main").
 func ExtractBySelector(html string, selectors []string) []SelectorResult {
 	var results []SelectorResult
 
@@ -21,15 +17,12 @@ func ExtractBySelector(html string, selectors []string) []SelectorResult {
 
 		switch {
 		case strings.HasPrefix(sel, "."):
-			// Class selector
 			className := sel[1:]
 			matches = extractByClass(html, className)
 		case strings.HasPrefix(sel, "#"):
-			// ID selector
 			id := sel[1:]
 			matches = extractByID(html, id)
 		default:
-			// Tag selector
 			matches = extractByTag(html, sel)
 		}
 
@@ -87,19 +80,16 @@ func extractByClass(html, className string) []string {
 			break
 		}
 		pos := offset + idx
-		// Find the enclosing tag start
 		tagStart := strings.LastIndex(lower[:pos], "<")
 		if tagStart < 0 {
 			offset = pos + len(lowerSearch)
 			continue
 		}
-		// Find end of opening tag
 		gt := strings.Index(lower[pos:], ">")
 		if gt < 0 {
 			break
 		}
 		contentStart := pos + gt + 1
-		// Find the tag name to locate closing tag
 		tagName := extractTagName(lower[tagStart:])
 		closeTag := "</" + tagName + ">"
 		end := strings.Index(lower[contentStart:], closeTag)
@@ -148,11 +138,10 @@ func extractByID(html, id string) []string {
 }
 
 func extractTagName(s string) string {
-	// s starts with '<'
 	if len(s) < 2 {
 		return ""
 	}
-	s = s[1:] // skip '<'
+	s = s[1:]
 	end := strings.IndexAny(s, " \t\n\r/>")
 	if end < 0 {
 		return s

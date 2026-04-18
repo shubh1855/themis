@@ -19,7 +19,6 @@ func openDB(ctx Context) (*dbx.DB, error) {
 	return dbx.Open(path)
 }
 
-// HandleSQLQuery executes a SQL query against a database.
 func HandleSQLQuery(ctx Context) models.ToolResponse {
 	db, err := openDB(ctx)
 	if err != nil {
@@ -43,7 +42,6 @@ func HandleSQLQuery(ctx Context) models.ToolResponse {
 	})
 }
 
-// HandleDBTables lists all tables in the database.
 func HandleDBTables(ctx Context) models.ToolResponse {
 	db, err := openDB(ctx)
 	if err != nil {
@@ -58,7 +56,6 @@ func HandleDBTables(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(tables)
 }
 
-// HandleDBSchema returns the schema for a table.
 func HandleDBSchema(ctx Context) models.ToolResponse {
 	db, err := openDB(ctx)
 	if err != nil {
@@ -78,7 +75,6 @@ func HandleDBSchema(ctx Context) models.ToolResponse {
 	return models.SuccessResponse(schema)
 }
 
-// HandleDBMigrate runs a SQL migration script.
 func HandleDBMigrate(ctx Context) models.ToolResponse {
 	db, err := openDB(ctx)
 	if err != nil {

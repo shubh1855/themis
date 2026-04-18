@@ -1,5 +1,3 @@
-// Package httpx provides a hardened, reusable HTTP client with retries,
-// rate limiting, connection reuse, and SSRF protection.
 package httpx
 
 import (
@@ -15,15 +13,11 @@ import (
 )
 
 const (
-	// DefaultTimeout is the default request timeout.
 	DefaultTimeout = 30 * time.Second
-	// MaxBodySize limits response body reads to 10MB.
 	MaxBodySize int64 = 10 * 1024 * 1024
-	// MaxRedirects limits redirect following.
 	MaxRedirects = 10
 )
 
-// Client is a hardened HTTP client with retries, rate limiting, and security checks.
 type Client struct {
 	http       *http.Client
 	retrier    *Retrier
@@ -33,38 +27,32 @@ type Client struct {
 	uaIndex    int
 }
 
-// ClientOption configures the Client.
 type ClientOption func(*Client)
 
-// WithTimeout sets the request timeout.
 func WithTimeout(d time.Duration) ClientOption {
 	return func(c *Client) {
 		c.http.Timeout = d
 	}
 }
 
-// WithMaxRetries sets the maximum retry count.
 func WithMaxRetries(n int) ClientOption {
 	return func(c *Client) {
 		c.retrier.MaxRetries = n
 	}
 }
 
-// WithRateLimit sets the per-host requests-per-second limit.
 func WithRateLimit(rps float64) ClientOption {
 	return func(c *Client) {
 		c.limiter.defaultRPS = rps
 	}
 }
 
-// WithSSRFAllowPrivate disables private IP blocking (for testing).
 func WithSSRFAllowPrivate() ClientOption {
 	return func(c *Client) {
 		c.ssrf.AllowPrivate = true
 	}
 }
 
-// NewClient creates a hardened HTTP client with the given options.
 func NewClient(opts ...ClientOption) *Client {
 	transport := NewTransport()
 
@@ -92,24 +80,19 @@ func NewClient(opts ...ClientOption) *Client {
 	return c
 }
 
-// Do executes an HTTP request with retries, rate limiting, and SSRF checks.
 func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// SSRF check
 	if err := c.ssrf.Check(req.URL.String()); err != nil {
 		return nil, err
 	}
 
-	// Rate limiting
 	if err := c.limiter.Wait(ctx, req.URL.Host); err != nil {
 		return nil, fmt.Errorf("httpx: rate limit: %w", err)
 	}
 
-	// Set user-agent
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", c.nextUserAgent())
 	}
 
-	// Accept gzip
 	req.Header.Set("Accept-Encoding", "gzip")
 
 	var resp *http.Response
@@ -133,7 +116,6 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
-// Get performs a GET request and returns the response.
 func (c *Client) Get(ctx context.Context, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -142,8 +124,6 @@ func (c *Client) Get(ctx context.Context, url string) (*http.Response, error) {
 	return c.Do(ctx, req)
 }
 
-// GetBody performs a GET request and returns the body as a string.
-// Handles gzip decompression and enforces max body size.
 func (c *Client) GetBody(ctx context.Context, url string) (string, error) {
 	resp, err := c.Get(ctx, url)
 	if err != nil {
@@ -176,7 +156,6 @@ func (c *Client) nextUserAgent() string {
 	return ua
 }
 
-// RetryableError marks an error as retryable (e.g. 5xx status codes).
 type RetryableError struct {
 	StatusCode int
 }

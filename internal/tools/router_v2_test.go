@@ -17,7 +17,6 @@ func testRouter(t *testing.T) *tools.Router {
 func TestRouterDispatch_KnownTool(t *testing.T) {
 	router := testRouter(t)
 
-	// read_file on a non-existent file should return an error response
 	resp := tools.ExecuteTool(context.Background(), models.ToolRequest{
 		Tool: "read_file",
 		Args: map[string]interface{}{"path": "nonexistent.txt"},
@@ -78,7 +77,6 @@ func TestRouterDispatch_AllToolsRegistered(t *testing.T) {
 func TestRouterDispatch_WriteAndReadFile(t *testing.T) {
 	router := testRouter(t)
 
-	// Write
 	resp := tools.ExecuteTool(context.Background(), models.ToolRequest{
 		Tool: "write_file",
 		Args: map[string]interface{}{
@@ -90,7 +88,6 @@ func TestRouterDispatch_WriteAndReadFile(t *testing.T) {
 		t.Fatalf("write_file failed: %s", resp.Error)
 	}
 
-	// Read
 	resp = tools.ExecuteTool(context.Background(), models.ToolRequest{
 		Tool: "read_file",
 		Args: map[string]interface{}{"path": "test.txt"},
