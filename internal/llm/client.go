@@ -1,6 +1,12 @@
 package llm
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 	openai "github.com/sashabaranov/go-openai"
 
 	agents "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/prompt/agents"
@@ -56,6 +62,23 @@ func NewClient(apiKey string) *openai.Client {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = "https://litellm-proxy-93ef.onrender.com/v1"
 	return openai.NewClientWithConfig(cfg)
+}
+
+// ── Message types for orchestration ──────────────────────────────────────────
+
+// ResponseMsg is the result of an agent call (single-shot orchestration path).
+type ResponseMsg struct {
+	Text    string
+	Agent   AgentID
+	History []openai.ChatCompletionMessage
+	Err     error
+}
+
+// DelegationMsg signals that Zeus wants to delegate to a sub-agent.
+type DelegationMsg struct {
+	Target  AgentID
+	Task    string
+	Context string
 }
 
 // ── Agent calls ──────────────────────────────────────────────────────────────
