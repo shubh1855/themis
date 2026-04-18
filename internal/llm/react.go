@@ -50,18 +50,28 @@ type ReactErrorMsg struct {
 	Err   error
 }
 
+// ReactStepLimitMsg is sent when an agent exhausts its step budget.
+// Zeus uses this to re-plan and continue rather than hard-failing.
+type ReactStepLimitMsg struct {
+	Agent       AgentID
+	Prompt      string // original user prompt that triggered this run
+	LastThought string // what the agent was reasoning about at the limit
+	StepsDone   int
+}
+
 type ToolExecutor func(tool string, args map[string]interface{}) (string, error)
 
-const maxReactSteps = 8
+const maxReactSteps = 30
 
 
 var agentTools = map[AgentID][]string{
-	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
-	AgentAthena:     {"delegate"}, // pure planning, delegates execution
-	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
+	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "store_memory", "retrieve_memory", "browser_view", "browser_run_js", "browser_close"},
+	AgentAthena:     {"delegate"},
+	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
 	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_run_js", "browser_close"},
 	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
 	AgentAres:       {"delegate", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
+	AgentPrometheus: {"delegate", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", "git_checkout_new_branch", "git_add", "git_commit", "git_push", "git_create_pr", "git_clone", "github_status", "github_login", "github_logout", "read_file", "list_dir", "run_cmd"},
 }
 
 var toolDescs = map[string]string{
@@ -81,7 +91,27 @@ var toolDescs = map[string]string{
 	"pip_search":   `{"tool":"pip_search","query":"<pkg>"} — search PyPI registry`,
 	"cargo_search": `{"tool":"cargo_search","query":"<crate>"} — search crates.io`,
 	"go_search":    `{"tool":"go_search","query":"<module>"} — search Go modules`,
-	"delegate":     `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares>","task":"<instructions>"} — delegate to sub-agent`,
+	"store_memory":    `{"tool":"store_memory","key":"<key>","content":"<value>"} — persist a value across steps`,
+	"retrieve_memory": `{"tool":"retrieve_memory","key":"<key>"} — retrieve a previously stored value`,
+	"delegate":        `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<instructions>"} — delegate to sub-agent`,
+	"move_file":    `{"tool":"move_file","src":"<src>","dst":"<dst>"} — move/rename file`,
+	"copy_file":    `{"tool":"copy_file","src":"<src>","dst":"<dst>"} — copy file`,
+	"tree":         `{"tool":"tree","path":"<dir>"} — recursive directory tree`,
+	"glob_search":  `{"tool":"glob_search","pattern":"<glob>"} — find files by pattern`,
+	"git_status":              `{"tool":"git_status"} — show working tree status`,
+	"git_diff":                `{"tool":"git_diff"} — show unstaged changes`,
+	"git_log":                 `{"tool":"git_log","count":10} — recent commit log`,
+	"git_branch":              `{"tool":"git_branch","name":"<optional>"} — list/create branch`,
+	"git_checkout":            `{"tool":"git_checkout","target":"<branch>"} — switch branch`,
+	"git_checkout_new_branch": `{"tool":"git_checkout_new_branch","branch":"<name>"} — create + switch branch`,
+	"git_add":                 `{"tool":"git_add","paths":"-A"} — stage files`,
+	"git_commit":              `{"tool":"git_commit","message":"<msg>","add_all":true} — commit`,
+	"git_push":                `{"tool":"git_push","remote":"origin","branch":"<branch>"} — push branch`,
+	"git_create_pr":           `{"tool":"git_create_pr","title":"<t>","body":"<b>","base":"main","head":"<branch>"} — create PR`,
+	"git_clone":               `{"tool":"git_clone","url":"<url>","dir":"<optional>"} — clone repo`,
+	"github_status":           `{"tool":"github_status"} — check auth status`,
+	"github_login":            `{"tool":"github_login"} — OAuth device login`,
+	"github_logout":           `{"tool":"github_logout"} — remove credentials`,
 	"browser_view":   `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
 	"browser_run_js": `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
 	"browser_close":  `{"tool":"browser_close"} — closes the browser if open`,
@@ -125,6 +155,8 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 		Role: openai.ChatMessageRoleUser, Content: userPrompt,
 	})
 
+	var lastThought string
+
 	for step := 0; step < maxReactSteps; step++ {
 		full, err := streamCall(client, messages, agent, ch)
 		if err != nil {
@@ -133,7 +165,9 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 		}
 
 		thought, action, answer, deleg := parseReact(full)
-		_ = thought
+		if thought != "" {
+			lastThought = thought
+		}
 
 		if deleg != nil {
 			ch <- ReactDelegateMsg{From: agent, Target: deleg.target, Task: deleg.task, Context: deleg.ctx}
@@ -167,7 +201,13 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 		return
 	}
 
-	ch <- ReactErrorMsg{Agent: agent, Err: fmt.Errorf("reached %d ReAct steps without answer", maxReactSteps)}
+	// Step limit reached — Zeus will re-plan rather than hard-fail
+	ch <- ReactStepLimitMsg{
+		Agent:       agent,
+		Prompt:      userPrompt,
+		LastThought: lastThought,
+		StepsDone:   maxReactSteps,
+	}
 }
 
 

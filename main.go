@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -102,6 +103,7 @@ type dashItem struct {
 	desc      string
 	id        int
 	projectID int
+	path      string // filesystem path for projects
 }
 
 // ── View modes ──────────────────────────────────────────────────────────
@@ -151,8 +153,13 @@ type model struct {
 	dashInput    textarea.Model // for "new project" name entry
 	dashCreating bool           // true when typing a new project name
 
-	activeProjectID int
-	qClient         *qdrant.Client
+	activeProjectID   int
+	activeProjectPath string
+	qClient           *qdrant.Client
+
+	// ── Conversation memory ──
+	chatLog        []string // plain-text rolling log for cross-prompt context
+	lastUserPrompt string   // most recent user prompt
 
 	// ── Agent / Chat state (existing Themis logic) ──
 	client   *openai.Client
@@ -226,6 +233,63 @@ type qdrantReadyMsg struct {
 	err error
 }
 
+type indexMsg struct {
+	err error
+}
+
+// indexProject triggers background file indexing for the active project.
+func (m model) indexProject() tea.Cmd {
+	if m.qClient == nil || m.activeProjectID == 0 || m.activeProjectPath == "" {
+		return nil
+	}
+	projectID := m.activeProjectID
+	dirPath := m.activeProjectPath
+	qc := m.qClient
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		err := qc.IndexDirectory(ctx, projectID, dirPath)
+		return indexMsg{err: err}
+	}
+}
+
+// buildChatContext returns the last N log entries as a context string for the LLM.
+func (m model) buildChatContext() string {
+	if len(m.chatLog) == 0 {
+		return ""
+	}
+	start := 0
+	if len(m.chatLog) > 20 {
+		start = len(m.chatLog) - 20
+	}
+	return "Recent conversation:\n" + strings.Join(m.chatLog[start:], "\n")
+}
+
+// appendChatLog adds an entry to the rolling conversation log (capped at 60 entries).
+func (m *model) appendChatLog(entry string) {
+	m.chatLog = append(m.chatLog, entry)
+	if len(m.chatLog) > 60 {
+		m.chatLog = m.chatLog[len(m.chatLog)-60:]
+	}
+}
+
+var continuationPhrases = []string{
+	"continue", "keep going", "go on", "proceed", "next step", "go ahead",
+	"more", "keep building", "carry on", "finish it", "finish up", "complete it",
+	"next", "keep working", "resume", "what's next", "whats next",
+}
+
+// isContinuation reports whether the prompt is asking to continue previous work.
+func isContinuation(s string) bool {
+	lower := strings.TrimRight(strings.ToLower(strings.TrimSpace(s)), ".!")
+	for _, phrase := range continuationPhrases {
+		if lower == phrase || strings.HasPrefix(lower, phrase+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 func startQdrant(mgr *qdrant.Manager) tea.Cmd {
 	return func() tea.Msg {
 		err := mgr.EnsureRunning()
@@ -245,6 +309,7 @@ func buildDashItems(db *dbx.DB) []dashItem {
 			desc:      p.Path + "  (" + p.UpdatedAt + ")",
 			id:        p.ID,
 			projectID: p.ID,
+			path:      p.Path,
 		})
 	}
 
@@ -506,7 +571,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case qdrantReadyMsg:
-		// Qdrant startup completed (success or failure) — just re-render
+		if msg.err == nil {
+			return m, m.indexProject()
+		}
+		return m, nil
+
+	case indexMsg:
+		// indexing completed in background — no UI action needed
 		return m, nil
 
 	case spinner.TickMsg:
@@ -589,6 +660,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case llm.ToolResultMsg:
 		m.pushOutput(ui.ObservationStyle.Render("📋 " + truncate(msg.Result, 500)))
+		m.appendChatLog("tool:" + msg.Tool + " → " + truncate(msg.Result, 150))
 		m.startThinkBlock(msg.Agent)
 		return m, llm.WaitReact(m.reactCh)
 
@@ -625,6 +697,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		text := strings.TrimSpace(msg.Text)
+		if text != "" {
+			m.appendChatLog(string(msg.Agent) + ": " + truncate(text, 400))
+		}
 		m.suggestions = nil
 		m.selectedSug = -1
 
@@ -647,6 +722,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.endThinkBlock()
 		m.loading = false
 		m.reactCh = nil
+
+	case llm.ReactStepLimitMsg:
+		m.endThinkBlock()
+		m.loading = false
+		m.reactCh = nil
+		if m.activeTaskID != "" {
+			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskFailed)
+		}
+		m.pushAgentOutput(msg.Agent, ui.WarnStyle.Render(
+			fmt.Sprintf("⚠ Reached %d steps — asking Zeus to re-plan...", msg.StepsDone)))
+
+		recoveryPrompt := fmt.Sprintf(
+			"The agent %s hit the step limit (%d steps) while working on:\n\n%s\n\nLast known thought: %s\n\nReview what was accomplished and what still needs to be done. Re-delegate or continue the work.",
+			msg.Agent, msg.StepsDone, msg.Prompt, msg.LastThought,
+		)
+		ctx := m.buildChatContext()
+		childID := m.taskGraph.AddChild(m.activeTaskID, "Zeus", "re-planning after step limit")
+		m.taskGraph.SetStatus(childID, ui.TaskRunning)
+		m.activeTaskID = childID
+		ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, recoveryPrompt, ctx, m.executor)
+		m.reactCh = ch
+		m.loading = true
+		return m, tea.Batch(reactCmd, m.spinner.Tick)
 
 	case llm.ReactErrorMsg:
 		m.endThinkBlock()
@@ -787,6 +885,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if userPrompt == "" {
 				return m, nil
 			}
+
+			// Expand continuation prompts into full task descriptions
+			effectivePrompt := userPrompt
+			if isContinuation(userPrompt) && m.lastUserPrompt != "" {
+				effectivePrompt = "Continue the previous task: " + m.lastUserPrompt +
+					"\n\nThe user said: " + userPrompt
+			} else {
+				m.lastUserPrompt = userPrompt
+			}
+
+			m.appendChatLog("User: " + userPrompt)
 			m.pushOutput("You > " + userPrompt)
 			m.input.SetValue("")
 			m.loading = true
@@ -796,34 +905,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizeView()
 
 			m.taskGraph = ui.NewTaskGraph()
-			rootID := m.taskGraph.AddRoot("Zeus", truncate(userPrompt, 50))
+			rootID := m.taskGraph.AddRoot("Zeus", truncate(effectivePrompt, 50))
 			m.activeTaskID = rootID
 
-			// If we have an active project, inject Qdrant context async before starting Zeus
-			if m.activeProjectID != 0 {
-				ch := make(chan tea.Msg, 32)
-				m.reactCh = ch
-				return m, tea.Batch(
-					m.spinner.Tick,
-					llm.WaitReact(ch), // <--- This was missing! It tells Bubble Tea to read the LLM messages.
-					func() tea.Msg {
-						// Wait for Qdrant search
-						ctx, err := m.qClient.SearchContext(context.Background(), m.activeProjectID, userPrompt)
-						if err != nil || ctx == "" {
-							// No context found or error, just proceed
-							go llm.RunReact(m.client, llm.AgentZeus, userPrompt, "", m.executor, ch)
-							return nil
-						}
-						// Proceed with context
-						go llm.RunReact(m.client, llm.AgentZeus, userPrompt, "Project vector memory context:\n"+ctx, m.executor, ch)
-						return nil
-					},
-				)
-			}
+			chatCtx := m.buildChatContext()
+			ep := effectivePrompt // capture for closure
 
-			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, userPrompt, "", m.executor)
+			// Build combined context: chat history + Qdrant vector search
+			ch := make(chan tea.Msg, 32)
 			m.reactCh = ch
-			return m, tea.Batch(reactCmd, m.spinner.Tick)
+			return m, tea.Batch(
+				m.spinner.Tick,
+				llm.WaitReact(ch),
+				func() tea.Msg {
+					var ctxParts []string
+					if chatCtx != "" {
+						ctxParts = append(ctxParts, chatCtx)
+					}
+					if m.activeProjectID != 0 && m.qClient != nil {
+						if vc, err := m.qClient.SearchContext(context.Background(), m.activeProjectID, ep); err == nil && vc != "" {
+							ctxParts = append(ctxParts, "Relevant project files:\n"+vc)
+						}
+					}
+					combinedCtx := strings.Join(ctxParts, "\n\n")
+					go llm.RunReact(m.client, llm.AgentZeus, ep, combinedCtx, m.executor, ch)
+					return nil
+				},
+			)
 		}
 
 		m.input, cmd = m.input.Update(msg)
@@ -847,13 +955,17 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			name := strings.TrimSpace(m.dashInput.Value())
 			if name != "" && m.db != nil {
 				wd, _ := os.Getwd()
-				_, _ = m.db.CreateProject(context.Background(), name, wd)
+				id, _ := m.db.CreateProject(context.Background(), name, wd)
 				m.dashItems = buildDashItems(m.db)
 				m.dashCursor = 0
+				if id > 0 {
+					m.activeProjectID = int(id)
+					m.activeProjectPath = wd
+				}
 			}
 			m.dashCreating = false
 			m.dashInput.SetValue("")
-			return m, nil
+			return m, m.indexProject()
 		default:
 			var cmd tea.Cmd
 			m.dashInput, cmd = m.dashInput.Update(msg)
@@ -880,9 +992,11 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					_ = m.db.TouchProject(context.Background(), item.id)
 				}
 				m.activeProjectID = item.projectID
+				m.activeProjectPath = item.path
 				m.viewMode = ViewChat
 				m.input.Focus()
 				m.pushOutput(dashSubtitle.Render("📂 Opened project: " + item.label))
+				return m, m.indexProject()
 			case "chat":
 				if m.db != nil {
 					_ = m.db.TouchChat(context.Background(), item.id)

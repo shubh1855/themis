@@ -1,70 +1,72 @@
-# Single-File Python Chess Game Plan
+# Implementation Plan: Yash's Professional Portfolio
 
 ## Project Summary
-A fully functional, single-file chess game implemented in Python. The application features a graphical user interface (GUI) for piece movement and basic move validation logic.
+Build a high-performance, premium dark-mode portfolio website for Yash using Next.js 14, Tailwind CSS, and TypeScript. The site focuses on a polished aesthetic, easy content updates via centralized data constants, and an Atomic Design component architecture.
 
-## Stack and Rationale
-- **Language:** Python 3.x
-- **GUI Library:** `tkinter` (Standard Library)
-  - *Rationale:* Zero external dependencies, ensuring the single-file distribution is portable and runs immediately on any standard Python installation.
+## Tech Stack
+- **Framework**: Next.js 14 (App Router)
+- **Styling**: Tailwind CSS
+- **Type Safety**: TypeScript
+- **Animations**: Framer Motion
+- **Icons**: Lucide React
 
 ## Folder Structure
-Since this is a single-file project, the structure is as follows:
-- `chess_game.py` (Contains all logic, classes, and GUI code)
-
-## Class Architecture
-
-### 1. `Piece` (Base Class)
-- **Attributes:** `color` (White/Black), `name` (Pawn, Rook, etc.), `symbol` (Unicode character for display).
-- **Methods:** `is_valid_move(start_pos, end_pos, board)` $\rightarrow$ returns Boolean.
-
-### 2. `Piece Subclasses` (Pawn, Rook, Knight, Bishop, Queen, King)
-- Each implements its own `is_valid_move` logic based on chess rules.
-
-### 3. `Board` (Game Logic)
-- **Attributes:** `grid` (8x8 2D list containing Piece objects or None), `turn` (White/Black).
-- **Methods:** 
-  - `move_piece(start_pos, end_pos)`: Validates move via the Piece class and updates grid.
-  - `get_piece(pos)`: Returns piece at coordinate.
-  - `switch_turn()`: Toggles active player.
-
-### 4. `ChessGUI` (Presentation Layer)
-- **Attributes:** `root` (Tk instance), `canvas` (Tk Canvas), `selected_square` (tracking current click).
-- **Methods:**
-  - `draw_board()`: Renders the 8x8 grid.
-  - `draw_pieces()`: Places Unicode chess symbols on the canvas.
-  - `handle_click(event)`: Manages the selection and movement flow.
-
-## Dependencies
-- None (Standard Library only).
+Refer to `docs/architecture.md` for the detailed annotated tree.
 
 ## Risk Register
 | Risk | Likelihood | Mitigation |
 | :--- | :--- | :--- |
-| Complex move validation (Castling/En Passant) | High | Implement basic piece moves first; mark advanced moves as deferred. |
-| GUI Layout issues on different OS | Low | Use fixed square sizes (e.g., 60x60) for consistent rendering. |
-| Single-file bloat | Low | Use clean class separations to keep the file readable. |
+| Content update friction | Low | Centralized `constants/index.ts` for all data |
+| Performance issues (Animations) | Medium | Use Framer Motion `layout` props and avoid over-animating |
+| Responsiveness gaps | Medium | Mobile-first development approach with Tailwind breakpoints |
 
 ## Milestones
 
-### M1: Core Logic & Piece Definitions
-- **Owner:** Hephaestus
-- **DoD:** `Board` and `Piece` classes implemented; unit-testable move validation for all pieces (excluding special moves like castling).
+### M1: Foundation & Scaffolding
+- **Owner**: Hephaestus
+- **Tasks**:
+    - Initialize Next.js project with TypeScript and Tailwind.
+    - Implement `docs/architecture.md` folder structure.
+    - Configure `tailwind.config.ts` with the premium dark-mode palette.
+    - Set up `lib/utils.ts` (clsx + tailwind-merge).
+- **Definition of Done**: Project runs locally, folder structure exists, and a basic page displays the primary brand colors.
 
-### M2: GUI Implementation
-- **Owner:** Hephaestus
-- **DoD:** `tkinter` window renders a board and places pieces using Unicode symbols; pieces can be moved via clicking.
+### M2: Data Layer & Atomic Components
+- **Owner**: Hephaestus
+- **Tasks**:
+    - Define TypeScript interfaces in `types/index.ts`.
+    - Populate `constants/index.ts` with mock project and skill data.
+    - Build **Atoms**: Button, Text, Badge, Input.
+- **Definition of Done**: All data types defined; Atoms are visually consistent and reusable.
 
-### M3: Integration & Polish
-- **Owner:** Hephaestus
-- **DoD:** Turn-based logic enforced; invalid moves trigger a visual warning or are ignored; final single-file cleanup.
+### M3: Molecules & Organisms (Core Sections)
+- **Owner**: Hephaestus
+- **Tasks**:
+    - Build **Molecules**: ProjectCard, SkillBadge, NavLink.
+    - Build **Organisms**: Navbar, HeroSection, SkillsSection.
+    - Integrate Framer Motion for subtle entry animations.
+- **Definition of Done**: Home page layout is complete and visually matching the architecture spec.
 
-### M4: Verification
-- **Owner:** Ares
-- **DoD:** All pieces move according to basic rules; no crashes on invalid inputs; GUI is responsive.
+### M4: Project Gallery & Dynamic Routing
+- **Owner**: Hephaestus
+- **Tasks**:
+    - Build ProjectGrid organism with filtering logic.
+    - Implement dynamic route `/projects/[slug]` for detailed project views.
+    - Connect dynamic pages to the `constants/index.ts` data.
+- **Definition of Done**: Users can navigate from home to a specific project detail page.
+
+### M5: Polish, SEO & Final Review
+- **Owner**: Ares / Hermes
+- **Tasks**:
+    - Add Meta tags, OpenGraph images, and Favicon.
+    - Implement responsive checks across mobile/tablet/desktop.
+    - Final accessibility (a11y) audit.
+- **Definition of Done**: Site is fully responsive, SEO optimized, and passes accessibility checks.
+
+## Open Decisions
+- Deployment target (Vercel is assumed).
+- Contact form implementation (EmailJS vs. Formspree vs. Custom API).
 
 ## Deferred Scope
-- Advanced chess rules: Castling, En Passant, Pawn Promotion.
-- Check/Checkmate detection (Basic move validation only).
-- AI opponent (Human vs Human only).
-- Save/Load game state.
+- Full Blog system (deferred to v2, can be added via MDX later).
+- Admin dashboard for content updates (deferred in favor of `constants/index.ts`).

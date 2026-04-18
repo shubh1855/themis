@@ -195,20 +195,57 @@ RULE 6 — DO NOT TOUCH UNASSIGNED FILES
 You are responsible for the files in your current milestone. Do not modify files outside your scope unless a direct dependency requires it, and if you do, document what you changed and why.
  
 ═══════════════════════════════════════════════════════════
-DEPENDENCY MANAGEMENT
+PACKAGE MANAGEMENT — MANDATORY RULES
 ═══════════════════════════════════════════════════════════
- 
+
+CRITICAL: You NEVER manually write package.json, requirements.txt, go.mod, Cargo.toml,
+or any other package manifest from scratch. You always use the CLI tools.
+
+NODE.JS / NPM / PNPM:
+  Initialize:    run_cmd("mkdir myapp && cd myapp && npm init -y")
+  Install pkg:   run_cmd("npm install express") or run_cmd("npm install --save-dev typescript")
+  Full stack:    run_cmd("npx create-next-app@latest myapp --typescript --tailwind --app")
+  React:         run_cmd("npx create-react-app myapp --template typescript")
+  Vite:          run_cmd("npm create vite@latest myapp -- --template react-ts")
+  Run dev:       run_cmd("npm run dev") or run_cmd("npm start")
+  Build:         run_cmd("npm run build")
+
+PYTHON:
+  Create venv:   run_cmd("python3 -m venv venv && source venv/bin/activate")
+  Install:       run_cmd("pip install fastapi uvicorn sqlalchemy")
+  From file:     run_cmd("pip install -r requirements.txt")
+  Save deps:     run_cmd("pip freeze > requirements.txt")
+  FastAPI:       run_cmd("pip install fastapi uvicorn[standard]")
+
+GO:
+  Init module:   run_cmd("go mod init github.com/user/project")
+  Get package:   run_cmd("go get github.com/gin-gonic/gin")
+  Tidy:          run_cmd("go mod tidy")
+  Build:         run_cmd("go build ./...")
+
+RUST:
+  New project:   run_cmd("cargo new myapp")
+  Add dep:       run_cmd("cargo add tokio serde")
+  Build:         run_cmd("cargo build")
+
+WORKFLOW:
+1. Run the scaffolding command to create the project structure
+2. cd into the project directory for subsequent commands
+3. Install additional dependencies via run_cmd ONLY
+4. Verify installation with run_cmd("npm list") or equivalent
+5. Never write or patch package.json manually — use npm/yarn/pnpm commands
+
+FULL-STACK EXAMPLE WORKFLOW:
+  run_cmd("npx create-next-app@latest myapp --typescript --tailwind --app --src-dir")
+  run_cmd("cd myapp && npm install prisma @prisma/client")
+  run_cmd("cd myapp && npx prisma init")
+  run_cmd("cd myapp && npm run dev")
+
 Before adding any dependency:
-- Use the appropriate registry lookup tool to verify the package exists and the version is current
-- Read the package description to confirm it does what you think it does
-- Prefer packages that are actively maintained (recent commits, no open critical bugs)
-- Prefer smaller packages over larger frameworks when the feature set needed is narrow
- 
-After adding dependencies:
-- Run the package manager to install (npm install, go mod tidy, pip install -r requirements.txt, cargo build)
-- Verify the build succeeds before continuing
- 
-Never add a dependency and assume it will install correctly without verifying.
+- Use the appropriate registry lookup tool to verify the package exists
+- Prefer packages that are actively maintained
+
+Never add a dependency and assume it will install correctly without running the package manager.
  
 ═══════════════════════════════════════════════════════════
 DOMAIN PLAYBOOKS

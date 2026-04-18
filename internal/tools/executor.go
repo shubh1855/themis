@@ -16,6 +16,8 @@ import (
 func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (string, error) {
 	fm := files.NewManager(rootDir)
 	deps := NewDependencies(rootDir)
+	router := NewRouter(deps)
+	memory := make(map[string]string) // session-scoped key/value store
 
 	return func(tool string, args map[string]interface{}) (string, error) {
 		switch tool {
@@ -64,6 +66,58 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 		case "delete_file":
 			p := models.ArgString(args, "path")
 			return "deleted " + p, fm.DeleteFile(p)
+
+		case "move_file":
+			src := models.ArgString(args, "src")
+			dst := models.ArgString(args, "dst")
+			return "moved " + src + " → " + dst, fm.MoveFile(src, dst)
+
+		case "copy_file":
+			src := models.ArgString(args, "src")
+			dst := models.ArgString(args, "dst")
+			return "copied " + src + " → " + dst, fm.CopyFile(src, dst)
+
+		case "tree":
+			p := models.ArgString(args, "path")
+			if p == "" {
+				p = "."
+			}
+			out, err := fm.Tree(p, 4)
+			if err != nil {
+				return "", err
+			}
+			return out, nil
+
+		case "glob_search":
+			pattern := models.ArgString(args, "pattern")
+			if pattern == "" {
+				return "", fmt.Errorf("missing 'pattern'")
+			}
+			matches, err := fm.Glob(pattern)
+			if err != nil {
+				return "", err
+			}
+			return strings.Join(matches, "\n"), nil
+
+		case "store_memory":
+			key := models.ArgString(args, "key")
+			if key == "" {
+				return "", fmt.Errorf("store_memory: missing 'key'")
+			}
+			content := models.ArgString(args, "content")
+			memory[key] = content
+			return fmt.Sprintf("stored key %q (%d chars)", key, len(content)), nil
+
+		case "retrieve_memory":
+			key := models.ArgString(args, "key")
+			if key == "" {
+				return "", fmt.Errorf("retrieve_memory: missing 'key'")
+			}
+			val, exists := memory[key]
+			if !exists {
+				return fmt.Sprintf("(no value stored for key %q — memory is empty for this key)", key), nil
+			}
+			return val, nil
 
 		case "list_dir":
 			p := models.ArgString(args, "path")
@@ -171,7 +225,19 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 			return string(b), nil
 
 		default:
-			return "", fmt.Errorf("unknown tool: %s", tool)
+			// Route unrecognized tools through the Router (handles git/github/registry/etc.)
+			resp := ExecuteTool(context.Background(), models.ToolRequest{
+				Tool: tool,
+				Args: args,
+			}, router)
+			if !resp.Success {
+				return "", fmt.Errorf("%s", resp.Error)
+			}
+			if s, ok := resp.Data.(string); ok {
+				return s, nil
+			}
+			b, _ := json.MarshalIndent(resp.Data, "", "  ")
+			return string(b), nil
 		}
 	}
 }
