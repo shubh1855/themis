@@ -18,7 +18,6 @@ var (
 	mu      sync.Mutex
 )
 
-// hasDisplay reports whether a graphical display is available for a visible browser.
 func hasDisplay() bool {
 	switch runtime.GOOS {
 	case "darwin", "windows":
@@ -28,9 +27,6 @@ func hasDisplay() bool {
 	}
 }
 
-// launchBrowser downloads (if needed) and launches Chromium. Falls back to
-// headless mode if a visible window cannot be opened (e.g. no $DISPLAY, or
-// sandbox failures on Linux).
 func launchBrowser() (*rod.Browser, error) {
 	headless := !hasDisplay()
 
@@ -44,7 +40,6 @@ func launchBrowser() (*rod.Browser, error) {
 
 	url, err := build(headless).Launch()
 	if err != nil && !headless {
-		// headful failed — retry headless so at least scraping works.
 		url, err = build(true).Launch()
 	}
 	if err != nil {
@@ -58,7 +53,6 @@ func launchBrowser() (*rod.Browser, error) {
 	return b, nil
 }
 
-// BrowserView opens a browser window, navigates to the URL, and extracts text.
 func BrowserView(url string) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -103,7 +97,6 @@ func BrowserView(url string) (string, error) {
 	return text, nil
 }
 
-// BrowserRunJS executes a JavaScript snippet in the current browser page.
 func BrowserRunJS(script string) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -128,7 +121,6 @@ func BrowserRunJS(script string) (string, error) {
 	return res.Value.String(), nil
 }
 
-// BrowserClose closes the current browser instance.
 func BrowserClose() string {
 	mu.Lock()
 	defer mu.Unlock()

@@ -13,8 +13,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/system"
 )
 
-// NewReactExecutor builds a tool executor for the ReAct loop.
-// It executes tools synchronously and returns text results.
 func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (string, error) {
 	fm := files.NewManager(rootDir)
 	deps := NewDependencies(rootDir)
@@ -22,7 +20,6 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 	return func(tool string, args map[string]interface{}) (string, error) {
 		switch tool {
 
-		// ── File tools ──────────────────────────────────────────────
 		case "create_file":
 			p := models.ArgString(args, "path")
 			c := models.ArgString(args, "content")
@@ -79,7 +76,6 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 			}
 			return fmt.Sprintf("%v", entries), nil
 
-		// ── Terminal ────────────────────────────────────────────────
 		case "run_cmd", "terminal":
 			command := models.ArgString(args, "command")
 			if command == "" {
@@ -113,7 +109,6 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 			}
 			return result.Stdout + result.Stderr, nil
 
-		// ── Web tools ───────────────────────────────────────────────
 		case "web_search":
 			query := models.ArgString(args, "query")
 			if query == "" {
@@ -159,13 +154,11 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 		case "browser_close":
 			return scraper.BrowserClose(), nil
 
-		// ── Registry tools ──────────────────────────────────────────
 		case "npm_search", "pip_search", "cargo_search", "go_search":
 			query := models.ArgString(args, "query")
 			if query == "" {
 				return "", fmt.Errorf("missing 'query'")
 			}
-			// Use the v2 router for registry tools
 			router := NewRouter(deps)
 			resp := ExecuteTool(context.Background(), models.ToolRequest{
 				Tool: tool,

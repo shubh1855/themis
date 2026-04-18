@@ -13,20 +13,16 @@ import (
 const npmRegistryURL = "https://registry.npmjs.org"
 const npmSearchURL = "https://registry.npmjs.org/-/v1/search"
 
-// NPM implements the Client interface for the npm registry.
 type NPM struct {
 	*BaseClient
 }
 
-// NewNPM creates an npm registry client.
 func NewNPM(base *BaseClient) *NPM {
 	return &NPM{BaseClient: base}
 }
 
-// Name returns the registry identifier.
 func (n *NPM) Name() string { return "npm" }
 
-// Search finds npm packages matching the query.
 func (n *NPM) Search(query string, limit int) (*models.PackageSearchResult, error) {
 	if limit <= 0 {
 		limit = 10
@@ -74,7 +70,6 @@ func (n *NPM) Search(query string, limit int) (*models.PackageSearchResult, erro
 	return result, nil
 }
 
-// Lookup retrieves metadata for a specific npm package.
 func (n *NPM) Lookup(name string) (*models.PackageInfo, error) {
 	cacheKey := cache.RegistryKey("npm", name)
 	if cached, ok := n.Cache.Get(cacheKey); ok {
@@ -112,7 +107,6 @@ func (n *NPM) Lookup(name string) (*models.PackageInfo, error) {
 	return info, nil
 }
 
-// npm API response types
 type npmSearchResponse struct {
 	Objects []struct {
 		Package struct {

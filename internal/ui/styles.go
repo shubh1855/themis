@@ -28,7 +28,6 @@ var (
 
 	SpinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
-	// Review option styles
 	ReviewAcceptStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true).PaddingLeft(1).PaddingRight(2)
 	ReviewRejectStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true).PaddingLeft(1).PaddingRight(2)
 	ReviewNeutralStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true).PaddingLeft(1).PaddingRight(2)
@@ -37,7 +36,6 @@ var (
 	ReviewHintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
 	ToolLabelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
 
-	// ── Agent styles ─────────────────────────────────────────────────────
 
 	AgentZeusStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
 	AgentAthenaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Bold(true)
@@ -47,7 +45,6 @@ var (
 	AgentAresStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	AgentDelegateStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("141")).Italic(true)
 
-	// ── ReAct / Thinking styles ──────────────────────────────────────────
 
 	ThinkStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("243")).

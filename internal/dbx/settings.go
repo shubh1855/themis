@@ -6,7 +6,6 @@ import (
 	"fmt"
 )
 
-// InitSettings ensures the key-value settings table exists.
 func (d *DB) InitSettings(ctx context.Context) error {
 	_, err := d.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS settings (
@@ -20,7 +19,6 @@ func (d *DB) InitSettings(ctx context.Context) error {
 	return nil
 }
 
-// GetSetting returns the stored value for key. ok is false if the key is absent.
 func (d *DB) GetSetting(ctx context.Context, key string) (value string, ok bool, err error) {
 	row := d.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key)
 	err = row.Scan(&value)
@@ -33,7 +31,6 @@ func (d *DB) GetSetting(ctx context.Context, key string) (value string, ok bool,
 	return value, true, nil
 }
 
-// SetSetting upserts a value for key.
 func (d *DB) SetSetting(ctx context.Context, key, value string) error {
 	_, err := d.db.ExecContext(ctx, `
 		INSERT INTO settings(key, value) VALUES(?, ?)

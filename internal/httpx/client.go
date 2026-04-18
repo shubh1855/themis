@@ -91,8 +91,6 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		req.Header.Set("User-Agent", c.nextUserAgent())
 	}
 
-	// NOTE: Do NOT set Accept-Encoding manually.
-	// http.Transport with DisableCompression=false handles gzip transparently.
 
 	var resp *http.Response
 	err := c.retrier.Do(ctx, func() error {
@@ -123,8 +121,6 @@ func (c *Client) Get(ctx context.Context, url string) (*http.Response, error) {
 	return c.Do(ctx, req)
 }
 
-// GetBody performs a GET request and returns the body as a string.
-// Gzip is handled transparently by the transport — no manual decompression needed.
 func (c *Client) GetBody(ctx context.Context, url string) (string, error) {
 	resp, err := c.Get(ctx, url)
 	if err != nil {
