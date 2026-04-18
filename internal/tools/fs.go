@@ -110,6 +110,17 @@ func (f *FS) Mkdir(path string) error {
 	return os.MkdirAll(p, 0755)
 }
 
+func (f *FS) EditFile(path, oldString, newString string) error {
+	content, err := f.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(content, oldString) {
+		return errors.New("old_string not found in " + path)
+	}
+	return f.WriteFile(path, strings.Replace(content, oldString, newString, 1))
+}
+
 func (f *FS) Exists(path string) bool {
 	p, err := f.SafePath(path)
 	if err != nil {

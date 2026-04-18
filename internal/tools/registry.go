@@ -3,17 +3,26 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"os/exec"
+	"strings"
+
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/syntax"
 )
 
 type ToolRequest struct {
-	Tool    string `json:"tool"`
-	Path    string `json:"path,omitempty"`
-	Content string `json:"content,omitempty"`
+	Tool      string `json:"tool"`
+	Path      string `json:"path,omitempty"`
+	Content   string `json:"content,omitempty"`
+	OldString string `json:"old_string,omitempty"`
+	NewString string `json:"new_string,omitempty"`
 }
 
 type ToolResult struct {
-	Success bool   `json:"success"`
-	Output  string `json:"output"`
+	Success bool
+	Output  string
+	// Non-nil for run_file: caller must start this via tty.Start.
+	ExecCmd *exec.Cmd
+	Cleanup func()
 }
 
 type Registry struct {
@@ -24,6 +33,43 @@ func NewRegistry(fs *FS) *Registry {
 	return &Registry{FS: fs}
 }
 
+// NeedsReview returns true for tools that modify state and should show a
+// preview + confirmation before executing.
+func NeedsReview(tool string) bool {
+	switch tool {
+	case "create_file", "write_file", "append_file", "edit_file", "run_file":
+		return true
+	}
+	return false
+}
+
+// Preview computes a diff/preview for a tool request without executing it.
+// Returns an empty string for tools that have no meaningful preview.
+func (r *Registry) Preview(req ToolRequest) string {
+	switch req.Tool {
+	case "create_file":
+		return syntax.DiffView("", req.Content, req.Path)
+	case "write_file":
+		old, _ := r.FS.ReadFile(req.Path)
+		return syntax.DiffView(old, req.Content, req.Path)
+	case "append_file":
+		return syntax.DiffView("", req.Content, req.Path)
+	case "edit_file":
+		old, _ := r.FS.ReadFile(req.Path)
+		if old == "" {
+			return ""
+		}
+		newContent := strings.Replace(old, req.OldString, req.NewString, 1)
+		return syntax.DiffView(old, newContent, req.Path)
+	case "run_file":
+		_, shell := DetectShell()
+		return "  $ " + shell + " " + req.Path
+	}
+	return ""
+}
+
+// Execute runs the tool and returns the result.
+// For file-writing tools the diff was already shown in Preview, so Output is brief.
 func (r *Registry) Execute(req ToolRequest) ToolResult {
 	switch req.Tool {
 
@@ -32,72 +78,57 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 		if err != nil {
 			return fail(err)
 		}
-		return ok(out)
+		return ok(syntax.Highlight(out, req.Path))
 
 	case "write_file":
-		err := r.FS.WriteFile(req.Path, req.Content)
-		if err != nil {
+		if err := r.FS.WriteFile(req.Path, req.Content); err != nil {
 			return fail(err)
 		}
-		return ok("file written")
+		return ok("wrote " + req.Path)
 
 	case "append_file":
-		err := r.FS.AppendFile(req.Path, req.Content)
-		if err != nil {
+		if err := r.FS.AppendFile(req.Path, req.Content); err != nil {
 			return fail(err)
 		}
-		return ok("file appended")
+		return ok("appended → " + req.Path)
 
 	case "create_file":
-		err := r.FS.CreateFile(req.Path, req.Content)
-		if err != nil {
+		if err := r.FS.CreateFile(req.Path, req.Content); err != nil {
 			return fail(err)
 		}
-		return ok("file created")
+		return ok("created " + req.Path)
+
+	case "edit_file":
+		if err := r.FS.EditFile(req.Path, req.OldString, req.NewString); err != nil {
+			return fail(err)
+		}
+		return ok("edited " + req.Path)
 
 	case "mkdir":
-		err := r.FS.Mkdir(req.Path)
-		if err != nil {
+		if err := r.FS.Mkdir(req.Path); err != nil {
 			return fail(err)
 		}
-		return ok("directory created")
+		return ok("created dir " + req.Path)
 
 	case "run_file":
-		out, err := r.FS.RunFile(req.Path, req.Content)
+		cmd, cleanup, err := r.FS.BuildRunCmd(req.Path, req.Content)
 		if err != nil {
-			if out != "" {
-				return ToolResult{Success: false, Output: out + "\n" + err.Error()}
-			}
 			return fail(err)
 		}
-		return ok(out)
+		return ToolResult{Success: true, ExecCmd: cmd, Cleanup: cleanup}
 
 	default:
-		return fail(errors.New("unknown tool"))
+		return fail(errors.New("unknown tool: " + req.Tool))
 	}
 }
 
 func (r *Registry) ExecuteJSON(raw string) ToolResult {
 	var req ToolRequest
-
-	err := json.Unmarshal([]byte(raw), &req)
-	if err != nil {
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		return fail(err)
 	}
-
 	return r.Execute(req)
 }
 
-func ok(msg string) ToolResult {
-	return ToolResult{
-		Success: true,
-		Output:  msg,
-	}
-}
-
-func fail(err error) ToolResult {
-	return ToolResult{
-		Success: false,
-		Output:  err.Error(),
-	}
-}
+func ok(msg string) ToolResult  { return ToolResult{Success: true, Output: msg} }
+func fail(err error) ToolResult { return ToolResult{Success: false, Output: err.Error()} }

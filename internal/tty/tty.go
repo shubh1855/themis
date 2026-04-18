@@ -1,0 +1,111 @@
+package tty
+
+import (
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/creack/pty"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// OutputMsg carries a raw chunk of output from the running process.
+type OutputMsg string
+
+// DoneMsg signals the process PTY has closed (process exited).
+type DoneMsg struct{ Err error }
+
+// Start launches cmd attached to a pseudo-terminal so the process believes
+// it has a real interactive terminal (fixes EOF on input() / scanf / etc.).
+// Returns the PTY master fd and an initial ReadOutput cmd to begin streaming.
+func Start(cmd *exec.Cmd) (*os.File, tea.Cmd, error) {
+	master, err := pty.Start(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+	return master, ReadOutput(master), nil
+}
+
+// ReadOutput reads one chunk from the PTY master and delivers it as OutputMsg.
+// When the process exits, the master returns an error → DoneMsg is sent.
+// Chain another ReadOutput after each OutputMsg to keep the stream going.
+func ReadOutput(master *os.File) tea.Cmd {
+	return func() tea.Msg {
+		buf := make([]byte, 4096)
+		n, err := master.Read(buf)
+		if n > 0 {
+			return OutputMsg(cleanOutput(string(buf[:n])))
+		}
+		if err != nil {
+			return DoneMsg{Err: err}
+		}
+		return ReadOutput(master)()
+	}
+}
+
+// KeyToBytes maps a bubbletea key string to the raw bytes a real terminal sends.
+func KeyToBytes(k string) []byte {
+	switch k {
+	case "enter":
+		return []byte("\r")
+	case "backspace":
+		return []byte("\x7f")
+	case "ctrl+c":
+		return []byte("\x03")
+	case "ctrl+d":
+		return []byte("\x04")
+	case "ctrl+z":
+		return []byte("\x1a")
+	case "up":
+		return []byte("\x1b[A")
+	case "down":
+		return []byte("\x1b[B")
+	case "right":
+		return []byte("\x1b[C")
+	case "left":
+		return []byte("\x1b[D")
+	case "tab":
+		return []byte("\t")
+	case "esc":
+		return []byte("\x1b")
+	case "space":
+		return []byte(" ")
+	default:
+		return []byte(k)
+	}
+}
+
+// cleanOutput normalises PTY output for display in a scrollable viewport:
+// strips VT100 cursor movement / screen-clear sequences while preserving
+// SGR colour codes so the program's own colours still show.
+func cleanOutput(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
+	// Remove cursor movement / erase sequences:  ESC [ <params> <letter A-Z except m>
+	// SGR colour codes end in 'm' and are left intact.
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Scan to the terminating letter
+			j := i + 2
+			for j < len(s) && (s[j] == ';' || (s[j] >= '0' && s[j] <= '9')) {
+				j++
+			}
+			if j < len(s) {
+				final := s[j]
+				if final == 'm' {
+					// SGR → keep the whole sequence
+					out.WriteString(s[i : j+1])
+				}
+				// Everything else (cursor movement, erase, etc.) → drop
+				i = j + 1
+				continue
+			}
+		}
+		out.WriteByte(s[i])
+		i++
+	}
+	return out.String()
+}
