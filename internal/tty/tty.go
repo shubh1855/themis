@@ -2,24 +2,14 @@ package tty
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 
-	"github.com/creack/pty"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type OutputMsg string
 
 type DoneMsg struct{ Err error }
-
-func Start(cmd *exec.Cmd) (*os.File, tea.Cmd, error) {
-	master, err := pty.Start(cmd)
-	if err != nil {
-		return nil, nil, err
-	}
-	return master, ReadOutput(master), nil
-}
 
 func ReadOutput(master *os.File) tea.Cmd {
 	return func() tea.Msg {
