@@ -142,6 +142,23 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 			}
 			return text, nil
 
+		case "browser_view":
+			url := models.ArgString(args, "url")
+			if url == "" {
+				return "", fmt.Errorf("missing 'url'")
+			}
+			return scraper.BrowserView(url)
+
+		case "browser_run_js":
+			script := models.ArgString(args, "script")
+			if script == "" {
+				return "", fmt.Errorf("missing 'script'")
+			}
+			return scraper.BrowserRunJS(script)
+
+		case "browser_close":
+			return scraper.BrowserClose(), nil
+
 		// ── Registry tools ──────────────────────────────────────────
 		case "npm_search", "pip_search", "cargo_search", "go_search":
 			query := models.ArgString(args, "query")
