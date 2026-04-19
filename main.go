@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	openai "github.com/sashabaranov/go-openai"
 
@@ -979,11 +980,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 		if text != "" {
-			rendered := text
-			if syntax.HasMath(text) {
-				rendered = syntax.RenderMath(text)
-			}
-			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(rendered))
+			m.pushAgentOutput(msg.Agent, renderMarkdown(text))
 			// Persist assistant response and log token usage.
 			if m.db != nil && m.activeChatID != 0 {
 				_ = m.db.SaveMessage(context.Background(), m.activeChatID, "assistant", text)
@@ -1080,7 +1077,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pushOutput("You > " + hm.Content)
 			case "assistant":
 				badge := themisStyle.Render("● Themis")
-				m.pushOutput(badge + " › " + ui.AnswerStyle.Render(hm.Content))
+				m.pushOutput(badge + " ›\n" + renderMarkdown(hm.Content))
 			}
 		}
 		m.pushOutput(lipgloss.NewStyle().Foreground(brandDim).Italic(true).Render("── history above, new messages below ──"))
@@ -1408,8 +1405,16 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// open project → switch to chat
 				if m.db != nil {
 					_ = m.db.TouchProject(context.Background(), item.id)
-					if id, err := m.db.CreateChat(context.Background(), item.id, "Session"); err == nil {
-						m.activeChatID = int(id)
+					chats, err := m.db.ListChats(context.Background(), item.id)
+					if err == nil && len(chats) > 0 {
+						// Resume most recent chat
+						m.activeChatID = chats[0].ID
+						_ = m.db.TouchChat(context.Background(), m.activeChatID)
+					} else {
+						// Only create a new one if no chats exist
+						if id, err := m.db.CreateChat(context.Background(), item.id, "Session"); err == nil {
+							m.activeChatID = int(id)
+						}
 					}
 				}
 				m.activeProjectID = item.projectID
@@ -1417,7 +1422,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.viewMode = ViewChat
 				m.input.Focus()
 				m.pushOutput(dashSubtitle.Render("▪ Opened project: " + item.label))
-				return m, m.indexProject()
+				return m, tea.Batch(m.indexProject(), m.loadChatHistory(m.activeChatID))
 			case "chat":
 				if m.db != nil {
 					_ = m.db.TouchChat(context.Background(), item.id)
@@ -1895,6 +1900,17 @@ func (m model) reviewFooter() string {
 	}
 	hint := ui.ReviewHintStyle.Render("  ←→ navigate   enter confirm   y/n/a shortcut")
 	return ui.BorderStyle.Render(strings.Join(opts, " ") + "\n" + hint)
+}
+
+func renderMarkdown(content string) string {
+	// Let glamour automatically detect width from TTY or default to 80.
+	// Dark style ensures code blocks are syntax highlighted nicely.
+	out, err := glamour.Render(content, "dark")
+	if err == nil {
+		return strings.TrimSpace(out)
+	}
+	// Fallback if Markdown parsing fails
+	return ui.AnswerStyle.Render(content)
 }
 
 // ── Settings view ───────────────────────────────────────────────────────
