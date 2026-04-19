@@ -1,100 +1,72 @@
 #!/usr/bin/env bash
-# Themis Installation Script
-# curl -fsSL https://raw.githubusercontent.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/main/scripts/install.sh | bash
-
 set -e
 
+# ==============================================================================
+# Themis CLI - Linux & macOS Installer
+# ==============================================================================
+# Since the repository is private, you need a GitHub PAT, or you can change
+# the GITHUB_API_URL below to point to your Cloudflare Worker Proxy.
+#
+# Usage: 
+#   curl -sL https://public-host.com/install.sh | bash -s -- YOUR_GITHUB_TOKEN
+# ==============================================================================
+
 REPO="syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey"
-BIN_NAME="themis"
-INSTALL_DIR="$HOME/.themis/bin"
+BINARY_NAME="themis"
+INSTALL_DIR="/usr/local/bin"
 
-# Colors
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+echo -e "\033[1;36mInstalling $BINARY_NAME CLI...\033[0m"
 
-echo -e "${BLUE}=== Installing Themis ===${NC}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-$1}"
+if [ -z "$GITHUB_TOKEN" ]; then
+    echo -e "\033[1;31m❌ Error: Private repository requires a GitHub token.\033[0m"
+    echo "Usage: curl -sL <url> | bash -s -- YOUR_TOKEN"
+    echo "Alternatively, deploy the Cloudflare Worker proxy to download without tokens!"
+    exit 1
+fi
 
-# 1. Detect OS and Architecture
-OS="$(uname -s)"
+echo "🔍 Fetching latest release from GitHub (Private repo)..."
+LATEST_RELEASE=$(curl -sH "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$REPO/releases/latest")
+
+# Detect Architecture
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
-
-case "$OS" in
-    Linux)  PLATFORM="linux" ;;
-    Darwin) PLATFORM="darwin" ;;
-    *)      echo "Unsupported OS: $OS"; exit 1 ;;
-esac
-
 case "$ARCH" in
-    x86_64|amd64) TARGET_ARCH="amd64" ;;
-    arm64|aarch64) TARGET_ARCH="arm64" ;;
-    *)            echo "Unsupported architecture: $ARCH"; exit 1 ;;
+    x86_64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-echo -e "Detected platform: ${PLATFORM}-${TARGET_ARCH}"
+echo "💻 Detected Platform: $OS-$ARCH"
 
-# 2. Setup Directories
-mkdir -p "$INSTALL_DIR"
+# Find correct asset URL natively
+ASSET_URL=$(echo "$LATEST_RELEASE" | grep -o 'https://api.github.com/repos/[^"]*assets/[^"]*' | grep -i "$OS" | grep -i "$ARCH" | head -n 1)
 
-# 3. Download the binary
-# Note: Adjust the download URL match your actual GitHub release asset naming scheme.
-# Often it looks like: themis_linux_amd64.tar.gz
-ASSET_NAME="${BIN_NAME}_${PLATFORM}_${TARGET_ARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET_NAME}"
-TMP_DIR=$(mktemp -d)
-
-echo -e "Downloading latest release..."
-# Download and extract the binary
-if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$ASSET_NAME"; then
-    tar -xzf "$TMP_DIR/$ASSET_NAME" -C "$TMP_DIR"
-    # Depending on how the tar is structured, the binary might be in a folder or direct.
-    # Assuming the binary 'themis' is directly extracted:
-    mv "$TMP_DIR/${BIN_NAME}" "$INSTALL_DIR/${BIN_NAME}"
-    chmod +x "$INSTALL_DIR/${BIN_NAME}"
-else
-    echo -e "${YELLOW}Warning: Precompiled binary not found at $DOWNLOAD_URL.${NC}"
-    echo -e "Falling back to 'go install' if Go is installed..."
-    if command -v go >/dev/null 2>&1; then
-        go install github.com/${REPO}@latest
-        # go install places it in $GOPATH/bin, copy it to our uniform dir
-        GOPATH=$(go env GOPATH)
-        cp "$GOPATH/bin/${BIN_NAME}" "$INSTALL_DIR/${BIN_NAME}"
-    else
-        echo -e "Error: Go is not installed. Cannot build from source."
-        exit 1
-    fi
+if [ -z "$ASSET_URL" ]; then
+    echo -e "\033[1;31m❌ Could not find a suitable release asset for $OS $ARCH.\033[0m"
+    exit 1
 fi
 
-rm -rf "$TMP_DIR"
+echo "⬇️ Downloading latest release tarball..."
+TEMP_TAR="/tmp/$BINARY_NAME.tar.gz"
+curl -sL -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" "$ASSET_URL" -o "$TEMP_TAR"
 
-# 4. Export to PATH for Bash, Zsh, and Fish
-inject_path() {
-    local rc_file="$1"
-    local path_cmd="$2"
-    if [ -f "$rc_file" ]; then
-        if ! grep -q "$INSTALL_DIR" "$rc_file"; then
-            echo -e "\n$path_cmd" >> "$rc_file"
-            echo "Added Themis to $rc_file"
-        fi
-    fi
-}
+echo "📦 Extracting and moving to $INSTALL_DIR (will request sudo)..."
+TMP_EXTRACT="/tmp/${BINARY_NAME}_extract"
+mkdir -p "$TMP_EXTRACT"
+tar -xzf "$TEMP_TAR" -C "$TMP_EXTRACT"
 
-inject_path "$HOME/.bashrc" "export PATH=\"\$PATH:$INSTALL_DIR\""
-inject_path "$HOME/.zshrc" "export PATH=\"\$PATH:$INSTALL_DIR\""
+# Find binary inside the extracted folder
+EXTRACTED_BIN=$(find "$TMP_EXTRACT" -type f -name "$BINARY_NAME" | head -n 1)
 
-# Fish configuration
-FISH_CONFIG_DIR="$HOME/.config/fish/conf.d"
-if command -v fish >/dev/null 2>&1; then
-    mkdir -p "$FISH_CONFIG_DIR"
-    if [ ! -f "$FISH_CONFIG_DIR/themis.fish" ]; then
-        echo "set -gx PATH \$PATH $INSTALL_DIR" > "$FISH_CONFIG_DIR/themis.fish"
-        echo "Added Themis to fish config"
-    fi
+if [ -z "$EXTRACTED_BIN" ]; then
+    echo -e "\033[1;31m❌ Could not find $BINARY_NAME binary inside the extracted archive.\033[0m"
+    exit 1
 fi
 
-# 5. Success
-echo -e "${GREEN}✔ Themis was successfully installed to $INSTALL_DIR${NC}"
-echo -e "\nTo get started, please restart your terminal or run:"
-echo -e "  ${YELLOW}export PATH=\"\$PATH:$INSTALL_DIR\"${NC}"
-echo -e "\nThen run: ${BLUE}themis --help${NC}"
+sudo mv "$EXTRACTED_BIN" "$INSTALL_DIR/$BINARY_NAME"
+sudo chmod +x "$INSTALL_DIR/$BINARY_NAME"
+
+rm -rf "$TMP_EXTRACT" "$TEMP_TAR"
+
+echo -e "\033[1;32m✅ $BINARY_NAME installed successfully! Run '$BINARY_NAME' to start bridging agents.\033[0m"

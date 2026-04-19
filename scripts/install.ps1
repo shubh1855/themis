@@ -1,89 +1,90 @@
 <#
 .SYNOPSIS
-Installs Themis on Windows.
-iex "& { $(irm https://raw.githubusercontent.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/main/scripts/install.ps1) }"
+Themis CLI Windows Installer for Private Repositories
+
+.DESCRIPTION
+Downloads the latest release of Themis directly from your private GitHub repository
+and configures the system PATH automatically.
+
+.EXAMPLE
+powershell -Command "iwr https://public-host.com/install.ps1 -useb | iex"
 #>
 
 $ErrorActionPreference = "Stop"
 
+Write-Host "🚀 Installing Themis CLI for Windows..." -ForegroundColor Cyan
+
+# Check if Token was provided to the shell script args, env var, or fallback to manual prompt
+$Token = $env:GITHUB_TOKEN
+if (-not $Token) {
+    if ($args.Count -gt 0) {
+        $Token = $args[0]
+    } else {
+        $Token = Read-Host "Private repository detected! Enter your GitHub Personal Access Token"
+    }
+}
+
 $Repo = "syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey"
-$BinName = "themis.exe"
-$InstallDir = Join-Path $HOME ".themis\bin"
+$Headers = @{
+    "Authorization" = "token $Token"
+    "Accept" = "application/vnd.github.v3+json"
+}
 
-Write-Host "=== Installing Themis ===" -ForegroundColor Cyan
-
-# 1. Detect Architecture
-$Arch = $env:PROCESSOR_ARCHITECTURE
-if ($Arch -eq "AMD64") {
-    $TargetArch = "amd64"
-} elseif ($Arch -eq "ARM64") {
-    $TargetArch = "arm64"
-} else {
-    Write-Error "Unsupported architecture: $Arch"
+Write-Host "🔍 Finding latest Windows release..." -ForegroundColor Yellow
+$ReleaseUrl = "https://api.github.com/repos/$Repo/releases/latest"
+try {
+    $Release = Invoke-RestMethod -Uri $ReleaseUrl -Headers $Headers
+} catch {
+    Write-Host "❌ Failed to fetch release. Incorrect token or lack of 'repo' scope." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Detected platform: windows-$TargetArch"
+# Auto-locate the windows zip artifact
+$AssetUrl = $Release.assets | Where-Object { $_.name -like "*windows*.zip" -or $_.name -like "*win64*" } | Select-Object -ExpandProperty url
 
-# 2. Setup Directories
-if (-not (Test-Path $InstallDir)) {
-    New-Item -ItemType Directory -Path $InstallDir | Out-Null
+if (-not $AssetUrl) {
+    Write-Host "❌ Could not find a suitable Windows release asset." -ForegroundColor Red
+    exit 1
 }
 
-# 3. Download the binary
-$AssetName = "themis_windows_$TargetArch.zip"
-$DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
-$TmpDir = Join-Path $env:TEMP "themis_install"
+$ZipFile = "$env:TEMP\themis.zip"
+$ExtractDir = "$env:TEMP\themis_extract"
 
-if (Test-Path $TmpDir) { Remove-Item -Force -Recurse $TmpDir }
-New-Item -ItemType Directory -Path $TmpDir | Out-Null
-$ZipPath = Join-Path $TmpDir $AssetName
+Write-Host "⬇️ Downloading... ($($AssetUrl))" -ForegroundColor Cyan
+$DownloadHeaders = @{
+    "Authorization" = "token $Token"
+    "Accept" = "application/octet-stream"
+}
+Invoke-WebRequest -Uri $AssetUrl -Headers $DownloadHeaders -OutFile $ZipFile
 
-Write-Host "Downloading latest release..."
-try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ZipPath
-    Expand-Archive -Path $ZipPath -DestinationPath $TmpDir -Force
-    
-    $ExtractedExe = Join-Path $TmpDir $BinName
-    if (Test-Path $ExtractedExe) {
-        Move-Item -Path $ExtractedExe -Destination (Join-Path $InstallDir $BinName) -Force
-    }
-} catch {
-    Write-Host "Warning: Precompiled binary not found or download failed." -ForegroundColor Yellow
-    Write-Host "Falling back to 'go install' if Go is installed..."
-    
-    if (Get-Command go -ErrorAction SilentlyContinue) {
-        # Run go install
-        Start-Process -FilePath "go" -ArgumentList "install github.com/$Repo@latest" -Wait -NoNewWindow
-        
-        $GoPath = (go env GOPATH).Trim()
-        $BuiltExe = Join-Path $GoPath "bin\$BinName"
-        if (Test-Path $BuiltExe) {
-            Copy-Item -Path $BuiltExe -Destination (Join-Path $InstallDir $BinName) -Force
-        }
-    } else {
-        Write-Error "Go is not installed. Cannot build from source."
-        exit 1
-    }
+Write-Host "📦 Extracting..." -ForegroundColor Yellow
+if (Test-Path $ExtractDir) { Remove-Item $ExtractDir -Recurse -Force }
+New-Item -ItemType Directory -Path $ExtractDir | Out-Null
+Expand-Archive -Path $ZipFile -DestinationPath $ExtractDir -Force
+
+$InstallDir = "$env:LOCALAPPDATA\themis\bin"
+if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
+
+$ExeFile = Get-ChildItem -Path $ExtractDir -Filter "themis.exe" -Recurse | Select-Object -First 1
+
+if (-not $ExeFile) {
+    Write-Host "❌ Could not locate themis.exe in the downloaded zip." -ForegroundColor Red
+    exit 1
 }
 
-if (Test-Path $TmpDir) { Remove-Item -Force -Recurse $TmpDir }
+Move-Item -Path $ExeFile.FullName -Destination "$InstallDir\themis.exe" -Force
 
-# 4. Add to PATH (User Environment Variable)
-function Add-ToPath {
-    param([string]$PathToAdd)
-    $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    if ($UserPath -split ";" -notcontains $PathToAdd) {
-        $NewPath = "$UserPath;$PathToAdd"
-        [Environment]::SetEnvironmentVariable("PATH", $NewPath, "User")
-        Write-Host "Added $PathToAdd to User PATH variable." -ForegroundColor Green
-    }
+# Automatically configure user's Path environment variable securely
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($UserPath -notlike "*$InstallDir*") {
+    $NewPath = "$UserPath;$InstallDir"
+    [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
+    Write-Host "🔌 Added $InstallDir to your PATH variable!" -ForegroundColor Magenta
+    Write-Host "⚠️  Please close and reopen your PowerShell window." -ForegroundColor Magenta
 }
 
-Add-ToPath -PathToAdd $InstallDir
+# Clean payload
+Remove-Item $ExtractDir -Recurse -Force
+Remove-Item $ZipFile -Force
 
-# 5. Success
-Write-Host "`n✔ Themis was successfully installed to $InstallDir" -ForegroundColor Green
-Write-Host "Please restart your PowerShell terminal for the PATH changes to take effect."
-Write-Host "`nThen run: " -NoNewline
-Write-Host "themis --help" -ForegroundColor Cyan
+Write-Host "✅ Themis CLI installed natively! Run 'themis' to launch your web interface." -ForegroundColor Green
