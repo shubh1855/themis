@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -15,19 +16,31 @@ import (
 
 const (
 	DefaultCmdTimeout = 60 * time.Second
-	MaxOutputSize = 1 * 1024 * 1024
+	MaxOutputSize     = 1 * 1024 * 1024
 )
 
 type ShellKind string
 
 const (
-	ShellBash ShellKind = "bash"
-	ShellZsh  ShellKind = "zsh"
-	ShellFish ShellKind = "fish"
-	ShellSh   ShellKind = "sh"
+	ShellBash        ShellKind = "bash"
+	ShellZsh         ShellKind = "zsh"
+	ShellFish        ShellKind = "fish"
+	ShellSh          ShellKind = "sh"
+	ShellPowerShell  ShellKind = "powershell"
+	ShellCmd         ShellKind = "cmd"
 )
 
 func DetectShell() (ShellKind, string) {
+	if runtime.GOOS == "windows" {
+		// Prefer PowerShell Core → Windows PowerShell → cmd.exe
+		if p, err := exec.LookPath("pwsh"); err == nil {
+			return ShellPowerShell, p
+		}
+		if p, err := exec.LookPath("powershell"); err == nil {
+			return ShellPowerShell, p
+		}
+		return ShellCmd, "cmd"
+	}
 	shellPath := os.Getenv("SHELL")
 	if shellPath == "" {
 		return ShellBash, "bash"
@@ -86,8 +99,17 @@ func RunCmd(ctx context.Context, command string, args []string, dir string, time
 }
 
 func RunShellCmd(ctx context.Context, cmdStr, dir string, timeout time.Duration) (*models.ProcessResult, error) {
-	_, shellBin := DetectShell()
-	return RunCmd(ctx, shellBin, []string{"-c", cmdStr}, dir, timeout)
+	kind, shellBin := DetectShell()
+	var flag string
+	switch kind {
+	case ShellCmd:
+		flag = "/c"
+	case ShellPowerShell:
+		flag = "-Command"
+	default:
+		flag = "-c"
+	}
+	return RunCmd(ctx, shellBin, []string{flag, cmdStr}, dir, timeout)
 }
 
 func truncateOutput(s string) string {

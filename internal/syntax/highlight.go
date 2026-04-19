@@ -48,6 +48,53 @@ func Highlight(code, filename string) string {
 	return buf.String()
 }
 
+// ColorDiff colorizes unified diff output (git diff / diff -u).
+// + lines → green, - lines → red, @@ → cyan, headers → dim.
+func ColorDiff(text string) string {
+	if text == "" {
+		return text
+	}
+	addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	delStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	hunkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("37")).Bold(true)
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true)
+
+	lines := strings.Split(text, "\n")
+	var sb strings.Builder
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index ") || strings.HasPrefix(line, "new file") || strings.HasPrefix(line, "deleted file"):
+			sb.WriteString(headerStyle.Render(line))
+		case strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ "):
+			sb.WriteString(fileStyle.Render(line))
+		case strings.HasPrefix(line, "@@"):
+			sb.WriteString(hunkStyle.Render(line))
+		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+			sb.WriteString(addStyle.Render(line))
+		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+			sb.WriteString(delStyle.Render(line))
+		default:
+			sb.WriteString(line)
+		}
+		sb.WriteByte('\n')
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// IsDiff reports whether text looks like a unified diff.
+func IsDiff(text string) bool {
+	for _, line := range strings.SplitN(text, "\n", 6) {
+		if strings.HasPrefix(line, "diff --git") ||
+			strings.HasPrefix(line, "--- ") ||
+			strings.HasPrefix(line, "+++ ") ||
+			strings.HasPrefix(line, "@@") {
+			return true
+		}
+	}
+	return false
+}
+
 func DiffView(oldContent, newContent, filename string) string {
 	if strings.TrimSpace(newContent) == "" {
 		return ""

@@ -64,8 +64,7 @@ type Manager struct {
 }
 
 func New() *Manager {
-	home, _ := os.UserHomeDir()
-	base := filepath.Join(home, ".local", "share", "themis")
+	base := platformDataDir()
 
 	exe := "qdrant"
 	if runtime.GOOS == "windows" {
@@ -77,6 +76,25 @@ func New() *Manager {
 		dataDir: filepath.Join(base, "qdrant_storage"),
 		status:  StatusStopped,
 	}
+}
+
+func platformDataDir() string {
+	if runtime.GOOS == "windows" {
+		if dir := os.Getenv("APPDATA"); dir != "" {
+			return filepath.Join(dir, "themis")
+		}
+	} else if runtime.GOOS == "darwin" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, "Library", "Application Support", "themis")
+		}
+	}
+	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
+		return filepath.Join(dir, "themis")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "share", "themis")
+	}
+	return filepath.Join(".", "themis")
 }
 
 // Status returns the current daemon status.

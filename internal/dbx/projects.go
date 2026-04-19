@@ -134,6 +134,55 @@ func (d *DB) TouchChat(ctx context.Context, id int) error {
 	return err
 }
 
+type Message struct {
+	ID        int
+	ChatID    int
+	Role      string
+	Content   string
+	CreatedAt string
+}
+
+func (d *DB) SaveMessage(ctx context.Context, chatID int, role, content string) error {
+	_, err := d.db.ExecContext(ctx, "INSERT INTO messages(chat_id, role, content) VALUES(?, ?, ?)", chatID, role, content)
+	if err != nil {
+		return fmt.Errorf("dbx: save message: %w", err)
+	}
+	return nil
+}
+
+func (d *DB) GetMessages(ctx context.Context, chatID int) ([]Message, error) {
+	rows, _, err := d.Query(ctx, "SELECT id, chat_id, role, content, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC", chatID)
+	if err != nil {
+		return nil, err
+	}
+	var out []Message
+	for _, r := range rows {
+		msg := Message{}
+		if v, ok := r["id"].(int64); ok {
+			msg.ID = int(v)
+		}
+		if v, ok := r["chat_id"].(int64); ok {
+			msg.ChatID = int(v)
+		}
+		if v, ok := r["role"].(string); ok {
+			msg.Role = v
+		}
+		if v, ok := r["content"].(string); ok {
+			msg.Content = v
+		}
+		if v, ok := r["created_at"].(string); ok {
+			msg.CreatedAt = v
+		}
+		out = append(out, msg)
+	}
+	return out, nil
+}
+
+func (d *DB) UpdateChatTitle(ctx context.Context, chatID int, title string) error {
+	_, err := d.db.ExecContext(ctx, "UPDATE chats SET title = ? WHERE id = ?", title, chatID)
+	return err
+}
+
 func (d *DB) RecentChats(ctx context.Context) ([]Chat, error) {
 	rows, _, err := d.Query(ctx, "SELECT id, project_id, title, created_at, updated_at FROM chats ORDER BY updated_at DESC LIMIT 10")
 	if err != nil {

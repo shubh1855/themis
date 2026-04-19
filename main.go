@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -19,9 +20,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	openai "github.com/sashabaranov/go-openai"
 
+	"github.com/NimbleMarkets/ntcharts/barchart"
+	"github.com/NimbleMarkets/ntcharts/sparkline"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/appdir"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/dbx"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/llm"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/mcp"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/qdrant"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/syntax"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
 	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
@@ -114,6 +120,8 @@ const (
 	ViewDashboard ViewMode = iota
 	ViewChat
 	ViewTasks
+	ViewMCP
+	ViewSettings
 )
 
 // ── Review types (existing) ─────────────────────────────────────────────
@@ -155,7 +163,31 @@ type model struct {
 
 	activeProjectID   int
 	activeProjectPath string
+	activeChatID      int // current chat being persisted; 0 = none
 	qClient           *qdrant.Client
+
+	// ── MCP ──
+	mcpManager *mcp.Manager
+	mcpCursor  int // cursor in ViewMCP server list
+
+	// ── Settings ──
+	settingsCursor int    // cursor in settings view (theme row index)
+	themeName      string // name of current theme key (saved to DB)
+
+	// ── Usage stats (loaded when settings opens) ──
+	usageLogs    []dbx.UsageEntry
+	usageTotalIn int
+	usageTotalOut int
+
+	// ── Multimodal ──
+	pendingImages []string // image paths to attach to next prompt
+
+	// ── Token tracking ──
+	curInputTokens  int // input tokens for the current/last request
+	curOutputTokens int // output tokens for current response (live)
+	tokenStreaming  bool // true while a response is being streamed
+	sessionIn       int // cumulative session input tokens
+	sessionOut      int // cumulative session output tokens
 
 	// ── Conversation memory ──
 	chatLog        []string // plain-text rolling log for cross-prompt context
@@ -183,6 +215,11 @@ type model struct {
 	activeAgent llm.AgentID
 	thinkIdx    int
 
+	// ── Verbose / quiet mode ──
+	verboseMode      bool   // true = show all THOUGHT streaming; false = compact loading
+	nonVerboseSpinner spinner.Model // a different spinner shown in quiet mode
+	thinkLineCount   int    // how many think lines suppressed (shown in quiet status)
+
 	taskGraph    *ui.TaskGraph
 	activeTaskID string
 
@@ -206,9 +243,9 @@ type dbReadyMsg struct {
 }
 
 func initDB() tea.Msg {
-	home, _ := os.UserHomeDir()
-	dbPath := filepath.Join(home, ".local", "share", "themis", "data.db")
-	_ = os.MkdirAll(filepath.Dir(dbPath), 0755)
+	dataDir := appdir.Data()
+	_ = os.MkdirAll(dataDir, 0755)
+	dbPath := filepath.Join(dataDir, "data.db")
 
 	db, err := dbx.Open(dbPath)
 	if err != nil {
@@ -221,6 +258,14 @@ func initDB() tea.Msg {
 	}
 	if e := db.InitProjects(ctx); e != nil {
 		return dbReadyMsg{err: e}
+	}
+	if e := db.InitUsage(ctx); e != nil {
+		return dbReadyMsg{err: e}
+	}
+
+	// Apply saved theme before first render.
+	if themeName, ok, _ := db.GetSetting(ctx, "theme"); ok && themeName != "" {
+		applyTheme(ui.GetTheme(themeName))
 	}
 
 	items := buildDashItems(db)
@@ -235,6 +280,92 @@ type qdrantReadyMsg struct {
 
 type indexMsg struct {
 	err error
+}
+
+type mcpReadyMsg struct{}
+
+type imagePickedMsg struct {
+	path string
+}
+
+type chatHistoryMsg struct {
+	chatID   int
+	messages []dbx.Message
+}
+
+type usageLoadedMsg struct {
+	logs     []dbx.UsageEntry
+	totalIn  int
+	totalOut int
+}
+
+// loadChatHistory fetches persisted messages for a chat from the DB.
+func (m model) loadChatHistory(chatID int) tea.Cmd {
+	if m.db == nil || chatID == 0 {
+		return nil
+	}
+	db := m.db
+	return func() tea.Msg {
+		msgs, err := db.GetMessages(context.Background(), chatID)
+		if err != nil || len(msgs) == 0 {
+			return nil
+		}
+		return chatHistoryMsg{chatID: chatID, messages: msgs}
+	}
+}
+
+// loadUsageData fetches token usage history from the DB for the settings view.
+func (m model) loadUsageData() tea.Cmd {
+	if m.db == nil {
+		return nil
+	}
+	db := m.db
+	return func() tea.Msg {
+		logs, _ := db.GetRecentUsage(context.Background(), 20)
+		// Reverse so oldest is first (for chart left→right).
+		for i, j := 0, len(logs)-1; i < j; i, j = i+1, j-1 {
+			logs[i], logs[j] = logs[j], logs[i]
+		}
+		totalIn, totalOut, _ := db.TotalUsage(context.Background())
+		return usageLoadedMsg{logs: logs, totalIn: totalIn, totalOut: totalOut}
+	}
+}
+
+// applyTheme updates the mutable brand-color vars and rebuilds derived styles.
+func applyTheme(t ui.Theme) {
+	brandPrimary = t.Primary
+	brandSecondary = t.Secondary
+	brandAccent = t.Accent
+	brandSuccess = t.Success
+	brandDanger = t.Danger
+	brandDim = t.Dim
+
+	dashBorder = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(brandSecondary).
+		Padding(1, 2)
+	dashTitle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(brandPrimary).
+		MarginBottom(1)
+	dashSubtitle = lipgloss.NewStyle().
+		Foreground(brandSecondary).
+		Italic(true)
+	dashItemSelected = lipgloss.NewStyle().
+		Foreground(brandPrimary).
+		Bold(true).
+		PaddingLeft(1)
+	dashSectionTitle = lipgloss.NewStyle().
+		Foreground(brandAccent).
+		Bold(true).
+		MarginTop(1)
+	dashHint = lipgloss.NewStyle().
+		Foreground(brandDim).
+		Italic(true).
+		MarginTop(1)
+	taskBarDone = lipgloss.NewStyle().Foreground(brandSuccess)
+	taskBarPending = lipgloss.NewStyle().Foreground(brandDim)
+	taskBarFailed = lipgloss.NewStyle().Foreground(brandDanger).Bold(true)
 }
 
 // indexProject triggers background file indexing for the active project.
@@ -359,23 +490,26 @@ func initialModel() model {
 	dashTA.ShowLineNumbers = false
 
 	llmClient := llm.NewClient(os.Getenv("INFERX_API_KEY"))
+	mcpMgr := mcp.NewManager()
 
 	return model{
-		viewMode: ViewDashboard,
-		workers:  worker.NewPool(),
-		qdrant:   qdrant.New(),
-		qClient:  qdrant.NewClient("http://127.0.0.1:6333", llmClient),
+		viewMode:   ViewDashboard,
+		workers:    worker.NewPool(),
+		qdrant:     qdrant.New(),
+		qClient:    qdrant.NewClient("http://127.0.0.1:6333", llmClient),
+		mcpManager: mcpMgr,
 
 		dashItems: []dashItem{
 			{kind: "action", label: "＋  New Project", desc: "Create a new project workspace"},
 			{kind: "action", label: "＋  New Chat", desc: "Start a standalone chat session"},
+			{kind: "action", label: "⚙  MCP Servers", desc: "Manage Model Context Protocol servers (ctrl+p)"},
 		},
 		dashCursor:  0,
 		dashInput:   dashTA,
 		client:      llmClient,
 		registry:    tools.NewRegistry(fs),
 		perms:       tools.NewPermissionManager(),
-		executor:    tools.NewReactExecutor(wd),
+		executor:    tools.NewReactExecutor(wd, mcpMgr),
 		viewport:    vp,
 		input:       ta,
 		spinner:     sp,
@@ -383,6 +517,13 @@ func initialModel() model {
 		history:     []string{},
 		selectedSug: -1,
 		thinkIdx:    -1,
+		verboseMode: true, // start in verbose mode
+		nonVerboseSpinner: func() spinner.Model {
+			s := spinner.New()
+			s.Spinner = spinner.Points
+			s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
+			return s
+		}(),
 		taskGraph:   ui.NewTaskGraph(),
 	}
 }
@@ -391,9 +532,22 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		m.spinner.Tick,
+		m.nonVerboseSpinner.Tick,
 		initDB,
 		startQdrant(m.qdrant),
+		m.startMCP(),
 	)
+}
+
+func (m model) startMCP() tea.Cmd {
+	mgr := m.mcpManager
+	return func() tea.Msg {
+		if err := mgr.LoadConfig(); err != nil {
+			return mcpReadyMsg{} // non-fatal
+		}
+		mgr.StartEnabled(context.Background())
+		return mcpReadyMsg{}
+	}
 }
 
 // ── Helpers (existing) ──────────────────────────────────────────────────
@@ -459,6 +613,16 @@ func (m *model) resizeView() {
 }
 
 func (m *model) startThinkBlock(agent llm.AgentID) {
+	m.thinkLineCount = 0
+	if !m.verboseMode {
+		// Quiet mode: push a single placeholder line we'll update in-place
+		badge := ui.AgentStyle(string(agent)).Render(
+			llm.AgentEmoji(agent) + " " + string(agent))
+		m.history = append(m.history, badge+" "+ui.ThinkStyle.Render("processing…"))
+		m.thinkIdx = len(m.history) - 1
+		m.updateViewport()
+		return
+	}
 	badge := ui.AgentStyle(string(agent)).Render(
 		llm.AgentEmoji(agent) + " " + string(agent))
 	header := badge + " " + ui.ThinkStyle.Render("thinking...")
@@ -468,15 +632,21 @@ func (m *model) startThinkBlock(agent llm.AgentID) {
 }
 
 func (m *model) appendToThink(chunk string) {
-	if m.thinkIdx >= 0 && m.thinkIdx < len(m.history) {
-		clean := chunk
-		clean = strings.ReplaceAll(clean, "THOUGHT:", "")
-		clean = strings.ReplaceAll(clean, "THOUGHT :", "")
-		clean = strings.ReplaceAll(clean, "ACTION:", "")
-		clean = strings.ReplaceAll(clean, "ACTION :", "")
-		m.history[m.thinkIdx] += ui.ThinkStyle.Render(clean)
-		m.updateViewport()
+	if m.thinkIdx < 0 || m.thinkIdx >= len(m.history) {
+		return
 	}
+	if !m.verboseMode {
+		// Count suppressed lines; update placeholder with rolling line count
+		m.thinkLineCount += strings.Count(chunk, "\n")
+		return
+	}
+	clean := chunk
+	clean = strings.ReplaceAll(clean, "THOUGHT:", "")
+	clean = strings.ReplaceAll(clean, "THOUGHT :", "")
+	clean = strings.ReplaceAll(clean, "ACTION:", "")
+	clean = strings.ReplaceAll(clean, "ACTION :", "")
+	m.history[m.thinkIdx] += ui.ThinkStyle.Render(clean)
+	m.updateViewport()
 }
 
 func (m *model) endThinkBlock() {
@@ -519,16 +689,67 @@ func (m *model) drainQueue() tea.Cmd {
 			m.review = &toolReview{req: req, selected: optAccept}
 			return nil
 		}
+
+		// Capture old content for diff preview BEFORE executing file tools
+		var oldContent string
+		switch req.Tool {
+		case "write_file", "edit_file":
+			oldContent, _ = m.registry.FS.ReadFile(req.Path)
+		}
+
 		m.pendingQueue = m.pendingQueue[1:]
 		res := m.registry.Execute(req)
 		if res.ExecCmd != nil {
 			return m.startPTY(res.ExecCmd, res.Cleanup)
 		}
-		if res.Output != "" {
-			m.pushOutput("[tool] " + res.Output)
+
+		// Emit inline diff for file-write operations
+		switch req.Tool {
+		case "write_file", "create_file":
+			newContent := req.Content
+			diffStr := syntax.DiffView(oldContent, newContent, req.Path)
+			if diffStr != "" {
+				header := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("205")).Bold(true).
+					Render("📄 "+req.Path) +
+					"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).
+					Render("("+req.Tool+")")
+				box := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("238")).
+					PaddingLeft(1).
+					Render(header + "\n" + diffStr)
+				m.pushOutput(box)
+			} else if res.Output != "" {
+				m.pushOutput("[tool] " + res.Output)
+			}
+		case "edit_file":
+			// For edit_file, compute diff between old and edited result
+			newContent, _ := m.registry.FS.ReadFile(req.Path)
+			diffStr := syntax.DiffView(oldContent, newContent, req.Path)
+			if diffStr != "" {
+				header := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("214")).Bold(true).
+					Render("✏ "+req.Path) +
+					"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).
+					Render("(edit_file)")
+				box := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("238")).
+					PaddingLeft(1).
+					Render(header + "\n" + diffStr)
+				m.pushOutput(box)
+			} else if res.Output != "" {
+				m.pushOutput("[tool] " + res.Output)
+			}
+		default:
+			if res.Output != "" {
+				m.pushOutput("[tool] " + res.Output)
+			}
 		}
 	}
 	return nil
+
 }
 
 func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
@@ -563,11 +784,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dbReadyMsg:
 		if msg.err != nil {
-			// silently continue without db
 			return m, nil
 		}
 		m.db = msg.db
 		m.dashItems = msg.items
+		// Load saved theme name so settings view cursor is correct.
+		if m.db != nil {
+			if name, ok, _ := m.db.GetSetting(context.Background(), "theme"); ok && name != "" {
+				m.themeName = name
+			} else {
+				m.themeName = "default"
+			}
+		}
+		return m, nil
+
+	case usageLoadedMsg:
+		m.usageLogs = msg.logs
+		m.usageTotalIn = msg.totalIn
+		m.usageTotalOut = msg.totalOut
 		return m, nil
 
 	case qdrantReadyMsg:
@@ -583,8 +817,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		if m.loading || m.running {
 			m.spinner, cmd = m.spinner.Update(msg)
-			return m, cmd
+			m.nonVerboseSpinner, _ = m.nonVerboseSpinner.Update(msg)
+			return m, tea.Batch(cmd, m.nonVerboseSpinner.Tick)
 		}
+		return m, m.nonVerboseSpinner.Tick
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -658,8 +894,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, llm.WaitReact(m.reactCh)
 
+	case llm.TaskPlanMsg:
+		steps := msg.Steps
+		if len(steps) > 0 {
+			parentID := m.activeTaskID
+			if parentID == "" && m.taskGraph.Root != nil {
+				parentID = m.taskGraph.Root.ID
+			}
+			m.taskGraph.AddPlannedSteps(parentID, steps)
+			m.taskGraph.ActivateNextPending()
+		}
+		return m, llm.WaitReact(m.reactCh)
+
+	case llm.TaskStepDoneMsg:
+		m.taskGraph.CompleteStepByLabel(msg.Step)
+		m.taskGraph.ActivateNextPending()
+		return m, llm.WaitReact(m.reactCh)
+
 	case llm.ToolResultMsg:
-		m.pushOutput(ui.ObservationStyle.Render("📋 " + truncate(msg.Result, 500)))
+		rendered := renderToolResult(msg.Tool, msg.Args, msg.Result)
+		m.pushOutput(rendered)
 		m.appendChatLog("tool:" + msg.Tool + " → " + truncate(msg.Result, 150))
 		m.startThinkBlock(msg.Agent)
 		return m, llm.WaitReact(m.reactCh)
@@ -683,7 +937,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeTaskID = childID
 
 		m.activeAgent = msg.Target
-		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, m.executor)
+		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, nil, m.mcpToolDescs(), m.executor)
 		m.reactCh = ch
 		return m, tea.Batch(reactCmd, m.spinner.Tick)
 
@@ -698,7 +952,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		text := strings.TrimSpace(msg.Text)
 		if text != "" {
-			m.appendChatLog(string(msg.Agent) + ": " + truncate(text, 400))
+			m.appendChatLog(string(msg.Agent) + ": " + truncate(text, 150))
 		}
 		m.suggestions = nil
 		m.selectedSug = -1
@@ -715,7 +969,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.drainQueue()
 		}
 		if text != "" {
-			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(text))
+			rendered := text
+			if syntax.HasMath(text) {
+				rendered = syntax.RenderMath(text)
+			}
+			m.pushAgentOutput(msg.Agent, ui.AnswerStyle.Render(rendered))
+			// Persist assistant response and log token usage.
+			if m.db != nil && m.activeChatID != 0 {
+				_ = m.db.SaveMessage(context.Background(), m.activeChatID, "assistant", text)
+			}
+			if m.db != nil && (m.sessionIn > 0 || m.sessionOut > 0) {
+				_ = m.db.LogUsage(context.Background(), string(msg.Agent), m.curInputTokens, m.curOutputTokens)
+			}
 		}
 
 	case llm.ReactDoneMsg:
@@ -741,7 +1006,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		childID := m.taskGraph.AddChild(m.activeTaskID, "Zeus", "re-planning after step limit")
 		m.taskGraph.SetStatus(childID, ui.TaskRunning)
 		m.activeTaskID = childID
-		ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, recoveryPrompt, ctx, m.executor)
+		ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, recoveryPrompt, ctx, nil, m.mcpToolDescs(), m.executor)
 		m.reactCh = ch
 		m.loading = true
 		return m, tea.Batch(reactCmd, m.spinner.Tick)
@@ -753,10 +1018,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeTaskID != "" {
 			m.taskGraph.SetStatus(m.activeTaskID, ui.TaskFailed)
 		}
-		m.pushAgentOutput(msg.Agent, "Error: "+msg.Err.Error())
+		errBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(brandDanger).
+			Foreground(brandDanger).
+			Bold(true).
+			Padding(0, 2).
+			Render("⚠  " + string(msg.Agent) + " Error\n\n" + msg.Err.Error())
+		m.pushOutput(errBox)
+
+	case chatHistoryMsg:
+		if len(msg.messages) == 0 {
+			return m, nil
+		}
+		themisStyle := lipgloss.NewStyle().Foreground(brandSecondary).Bold(true)
+		for _, hm := range msg.messages {
+			switch hm.Role {
+			case "user":
+				m.pushOutput("You > " + hm.Content)
+			case "assistant":
+				badge := themisStyle.Render("🤖 Themis")
+				m.pushOutput(badge + " › " + ui.AnswerStyle.Render(hm.Content))
+			}
+		}
+		m.pushOutput(lipgloss.NewStyle().Foreground(brandDim).Italic(true).Render("── history above, new messages below ──"))
+		return m, nil
 
 	case worker.ProgressMsg:
 		// background worker updates, re-render tasks view
+		return m, nil
+
+	case mcpReadyMsg:
+		// MCP servers started in background; no UI action needed.
+		return m, nil
+
+	case llm.TokenUpdateMsg:
+		m.curInputTokens = msg.InputTokens
+		m.curOutputTokens = msg.OutputTokens
+		m.tokenStreaming = !msg.IsFinal
+		if msg.IsFinal {
+			m.sessionIn += msg.InputTokens
+			m.sessionOut += msg.OutputTokens
+		}
+		return m, nil
+
+	case imagePickedMsg:
+		if msg.path != "" {
+			m.pendingImages = append(m.pendingImages, msg.path)
+			m.pushOutput(fmt.Sprintf("📎 Image attached: %s", filepath.Base(msg.path)))
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -771,6 +1081,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+t":
 			m.viewMode = ViewTasks
 			return m, nil
+		case "ctrl+p":
+			m.viewMode = ViewMCP
+			return m, nil
+		case "ctrl+s":
+			m.viewMode = ViewSettings
+			// Set cursor to current theme index.
+			for i, name := range ui.ThemeOrder {
+				if name == m.themeName {
+					m.settingsCursor = i
+				}
+			}
+			return m, m.loadUsageData()
+		case "ctrl+o":
+			return m, pickImageFile()
+		case "ctrl+v":
+			m.verboseMode = !m.verboseMode
+			if m.verboseMode {
+				banner := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("40")).
+					Bold(true).
+					Render("● Verbose mode ON — full agent thinking shown")
+				m.pushOutput(banner)
+			} else {
+				banner := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("99")).
+					Bold(true).
+					Render("◉ Quiet mode ON — compact loaders active  [ctrl+v to restore]")
+				m.pushOutput(banner)
+			}
+			return m, nil
+		}
+
+		// ── MCP view ──
+		if m.viewMode == ViewMCP {
+			return m.updateMCPView(msg)
+		}
+
+		// ── Settings view ──
+		if m.viewMode == ViewSettings {
+			return m.updateSettings(msg)
 		}
 
 		// ── Dashboard mode ──
@@ -899,6 +1249,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushOutput("You > " + userPrompt)
 			m.input.SetValue("")
 			m.loading = true
+
+			// Persist message to DB — create chat on first message if needed.
+			if m.db != nil {
+				if m.activeChatID == 0 {
+					title := userPrompt
+					if len(title) > 60 {
+						title = title[:57] + "…"
+					}
+					if id, err := m.db.CreateChat(context.Background(), m.activeProjectID, title); err == nil {
+						m.activeChatID = int(id)
+						m.dashItems = buildDashItems(m.db)
+					}
+				}
+				if m.activeChatID != 0 {
+					_ = m.db.SaveMessage(context.Background(), m.activeChatID, "user", userPrompt)
+					_ = m.db.TouchChat(context.Background(), m.activeChatID)
+				}
+			}
+			m.curInputTokens = 0
+			m.curOutputTokens = 0
+			m.tokenStreaming = false
 			m.activeAgent = llm.AgentZeus
 			m.suggestions = nil
 			m.selectedSug = -1
@@ -909,7 +1280,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeTaskID = rootID
 
 			chatCtx := m.buildChatContext()
-			ep := effectivePrompt // capture for closure
+			ep := effectivePrompt     // capture for closure
+			imgs := m.pendingImages   // capture images; clear from model
+			m.pendingImages = nil
 
 			// Build combined context: chat history + Qdrant vector search
 			ch := make(chan tea.Msg, 32)
@@ -919,7 +1292,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				llm.WaitReact(ch),
 				func() tea.Msg {
 					var ctxParts []string
-					if chatCtx != "" {
+					// Skip chatLog when images are attached — previous image descriptions
+					// in the log cause the LLM to describe the wrong image.
+					if chatCtx != "" && len(imgs) == 0 {
 						ctxParts = append(ctxParts, chatCtx)
 					}
 					if m.activeProjectID != 0 && m.qClient != nil {
@@ -928,7 +1303,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					combinedCtx := strings.Join(ctxParts, "\n\n")
-					go llm.RunReact(m.client, llm.AgentZeus, ep, combinedCtx, m.executor, ch)
+					go llm.RunReact(m.client, llm.AgentZeus, ep, combinedCtx, imgs, m.mcpToolDescs(), m.executor, ch)
 					return nil
 				},
 			)
@@ -990,6 +1365,9 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// open project → switch to chat
 				if m.db != nil {
 					_ = m.db.TouchProject(context.Background(), item.id)
+					if id, err := m.db.CreateChat(context.Background(), item.id, "Session"); err == nil {
+						m.activeChatID = int(id)
+					}
 				}
 				m.activeProjectID = item.projectID
 				m.activeProjectPath = item.path
@@ -1001,18 +1379,28 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if m.db != nil {
 					_ = m.db.TouchChat(context.Background(), item.id)
 				}
+				m.activeChatID = item.id
 				m.activeProjectID = item.projectID
 				m.viewMode = ViewChat
 				m.input.Focus()
 				m.pushOutput(dashSubtitle.Render("💬 Resumed chat: " + item.label))
+				return m, m.loadChatHistory(item.id)
 			case "action":
 				if strings.Contains(item.label, "New Project") {
 					m.dashCreating = true
 					m.dashInput.Focus()
 				} else if strings.Contains(item.label, "New Chat") {
+					m.activeChatID = 0
+					if m.db != nil {
+						if id, err := m.db.CreateChat(context.Background(), m.activeProjectID, "New Chat"); err == nil {
+							m.activeChatID = int(id)
+						}
+					}
 					m.viewMode = ViewChat
 					m.input.Focus()
 					m.pushOutput(dashSubtitle.Render("💬 New chat session started"))
+				} else if strings.Contains(item.label, "MCP") {
+					m.viewMode = ViewMCP
 				}
 			}
 		}
@@ -1036,6 +1424,10 @@ func (m model) View() string {
 		return m.renderDashboard()
 	case ViewTasks:
 		return m.renderTasks()
+	case ViewMCP:
+		return m.renderMCPView()
+	case ViewSettings:
+		return m.renderSettings()
 	default:
 		return m.renderChat()
 	}
@@ -1154,7 +1546,28 @@ func (m model) renderDashboard() string {
 	default:
 		qdrantBadge = lipgloss.NewStyle().Foreground(brandDim).Render("○ Qdrant")
 	}
-	sb.WriteString("  " + qdrantBadge + "\n\n")
+	// MCP status badges
+	mcpStatuses := m.mcpManager.Statuses()
+	var mcpReady, mcpTotal int
+	for _, s := range mcpStatuses {
+		if s.Config.Enabled {
+			mcpTotal++
+			if s.Ready {
+				mcpReady++
+			}
+		}
+	}
+	var mcpBadge string
+	if mcpTotal == 0 {
+		mcpBadge = lipgloss.NewStyle().Foreground(brandDim).Render("○ MCP")
+	} else if mcpReady == mcpTotal {
+		mcpBadge = lipgloss.NewStyle().Foreground(brandSuccess).Bold(true).
+			Render(fmt.Sprintf("● MCP (%d/%d servers)", mcpReady, mcpTotal))
+	} else {
+		mcpBadge = lipgloss.NewStyle().Foreground(brandAccent).
+			Render(fmt.Sprintf("◌ MCP (%d/%d ready)", mcpReady, mcpTotal))
+	}
+	sb.WriteString("  " + qdrantBadge + "  │  " + mcpBadge + "\n\n")
 
 	// Status bar
 	activeCount := 0
@@ -1165,6 +1578,7 @@ func (m model) renderDashboard() string {
 		lipgloss.NewStyle().Foreground(brandDim).Render("enter select"),
 		lipgloss.NewStyle().Foreground(brandDim).Render("n new project"),
 		lipgloss.NewStyle().Foreground(brandDim).Render("ctrl+t tasks"),
+		lipgloss.NewStyle().Foreground(brandPrimary).Render("ctrl+p MCP servers"),
 		lipgloss.NewStyle().Foreground(brandDim).Render("ctrl+c quit"),
 	}
 	if activeCount > 0 {
@@ -1231,7 +1645,14 @@ func (m model) renderChat() string {
 			agentBadge = ui.AgentStyle(string(m.activeAgent)).Render(
 				llm.AgentEmoji(m.activeAgent)+" "+string(m.activeAgent)) + " "
 		}
-		status = m.spinner.View() + " " + agentBadge + "Thinking..."
+		if m.verboseMode {
+			status = m.spinner.View() + " " + agentBadge + "Thinking..."
+		} else {
+			// Quiet mode: show the cool spinner with a compact tag
+			status = m.nonVerboseSpinner.View() + " " + agentBadge +
+				lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Render("working") +
+				"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("[ctrl+v for verbose]")
+		}
 	} else if m.running {
 		status = m.spinner.View() + " Running..."
 	}
@@ -1276,17 +1697,141 @@ func (m model) renderChat() string {
 	if m.review != nil {
 		footer = m.reviewFooter()
 	} else {
-		footer = ui.BorderStyle.Render(m.input.View())
+		inputView := m.input.View()
+		if len(m.pendingImages) > 0 {
+			inputView += fmt.Sprintf("\n  📎 %d image(s) attached (ctrl+o to add more)", len(m.pendingImages))
+		}
+		footer = ui.BorderStyle.Render(inputView)
 	}
 
-	helpBar := ui.StatusStyle.Render(status + "  │  " + m.help.View(ui.Keys) + "  │  esc: dashboard  ctrl+t: tasks")
+	tokenBar := m.renderTokenBar()
+	helpBar := ui.StatusStyle.Render(status + "  │  " + m.help.View(ui.Keys) + "  │  esc: dashboard  ctrl+t: tasks  ctrl+p: MCP  ctrl+o: image")
 
 	parts := []string{topRow}
 	if sugView != "" {
 		parts = append(parts, sugView)
 	}
-	parts = append(parts, footer, helpBar)
+	parts = append(parts, footer, tokenBar, helpBar)
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func (m model) renderTokenBar() string {
+	inStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))   // blue
+	outStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")) // pink
+	dimStyle := lipgloss.NewStyle().Foreground(brandDim)
+	sessStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+
+	inStr := fmtTokens(m.curInputTokens)
+	outStr := fmtTokens(m.curOutputTokens)
+
+	streamSuffix := ""
+	if m.tokenStreaming {
+		streamSuffix = "…"
+	}
+
+	var parts []string
+	if m.curInputTokens > 0 || m.curOutputTokens > 0 {
+		parts = append(parts,
+			inStyle.Render("↑ "+inStr+" in"),
+			outStyle.Render("↓ "+outStr+streamSuffix+" out"),
+		)
+	}
+	if m.sessionIn > 0 {
+		parts = append(parts,
+			sessStyle.Render("session: "+fmtTokens(m.sessionIn+m.sessionOut)+" total"),
+		)
+	}
+
+	if len(parts) == 0 {
+		return dimStyle.Render("  tokens: —")
+	}
+	return dimStyle.Render("  ") + strings.Join(parts, dimStyle.Render("  │  "))
+}
+
+// mcpToolDescs builds a newline-delimited list of mcp__server__tool descriptions
+// for all currently connected MCP servers, to be injected into the agent system prompt.
+func (m model) mcpToolDescs() string {
+	if m.mcpManager == nil {
+		return ""
+	}
+	tools := m.mcpManager.AllTools()
+	if len(tools) == 0 {
+		return ""
+	}
+	// Keep descriptions compact — just name + one-line description, max 40 tools.
+	var sb strings.Builder
+	limit := len(tools)
+	if limit > 40 {
+		limit = 40
+	}
+	for _, t := range tools[:limit] {
+		desc := t.Description
+		if len(desc) > 80 {
+			desc = desc[:77] + "…"
+		}
+		sb.WriteString(fmt.Sprintf(`{"tool":"%s"} — %s`+"\n", t.Name, desc))
+	}
+	return sb.String()
+}
+
+// renderToolResult formats a tool result for display, applying diff coloring
+// or syntax highlighting when relevant.
+func renderToolResult(tool string, args map[string]interface{}, result string) string {
+	// Diff coloring: git_diff results or any result that looks like unified diff.
+	if tool == "git_diff" || syntax.IsDiff(result) {
+		colored := syntax.ColorDiff(result)
+		return ui.ObservationStyle.Render("📋 "+tool) + "\n" + colored
+	}
+
+	// Syntax highlighting for file reads.
+	if tool == "read_file" || tool == "create_file" || tool == "write_file" {
+		path := ""
+		if args != nil {
+			if p, ok := args["path"].(string); ok {
+				path = p
+			}
+		}
+		if path != "" && looksLikeCode(path) {
+			highlighted := syntax.Highlight(result, path)
+			return ui.ObservationStyle.Render("📋 "+path) + "\n" + highlighted
+		}
+	}
+
+	// MCP tool calls — show server name prominently.
+	if strings.HasPrefix(tool, "mcp__") {
+		parts := strings.SplitN(tool, "__", 3)
+		header := "📦 MCP"
+		if len(parts) == 3 {
+			header = fmt.Sprintf("📦 MCP[%s] %s", parts[1], parts[2])
+		}
+		return ui.ObservationStyle.Render("📋 "+header) + "\n" +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(truncate(result, 800))
+	}
+
+	return ui.ObservationStyle.Render("📋 " + truncate(result, 500))
+}
+
+func looksLikeCode(path string) bool {
+	codeExts := []string{".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java",
+		".c", ".cpp", ".h", ".cs", ".rb", ".sh", ".yaml", ".yml", ".json",
+		".toml", ".html", ".css", ".scss", ".md", ".sql", ".tf", ".kt", ".swift"}
+	lower := strings.ToLower(path)
+	for _, ext := range codeExts {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func fmtTokens(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("%d,%03d", n/1000, n%1000)
+	}
+	return fmt.Sprintf("%d", n)
 }
 
 func (m model) reviewFooter() string {
@@ -1307,6 +1852,314 @@ func (m model) reviewFooter() string {
 	}
 	hint := ui.ReviewHintStyle.Render("  ←→ navigate   enter confirm   y/n/a shortcut")
 	return ui.BorderStyle.Render(strings.Join(opts, " ") + "\n" + hint)
+}
+
+// ── Settings view ───────────────────────────────────────────────────────
+
+func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+s":
+		m.viewMode = ViewDashboard
+	case "up", "k":
+		if m.settingsCursor > 0 {
+			m.settingsCursor--
+		}
+	case "down", "j":
+		if m.settingsCursor < len(ui.ThemeOrder)-1 {
+			m.settingsCursor++
+		}
+	case "enter", " ":
+		// Apply selected theme.
+		if m.settingsCursor < len(ui.ThemeOrder) {
+			name := ui.ThemeOrder[m.settingsCursor]
+			m.themeName = name
+			applyTheme(ui.GetTheme(name))
+			if m.db != nil {
+				_ = m.db.SetSetting(context.Background(), "theme", name)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m model) renderSettings() string {
+	w := m.width - 4
+	if w < 40 {
+		w = 40
+	}
+
+	t := ui.GetTheme(m.themeName)
+	if m.themeName == "" {
+		t = ui.GetTheme("default")
+	}
+	accent := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	sectionStyle := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(t.Dim)
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Secondary).
+		Padding(1, 2).
+		Width(w)
+
+	var sb strings.Builder
+
+	// ── Header ──────────────────────────────────────────────────────────
+	sb.WriteString(accent.Render("⚙  Settings") + "\n\n")
+
+	// ── API Configuration ────────────────────────────────────────────────
+	sb.WriteString(sectionStyle.Render("── API Configuration") + "\n\n")
+	apiKey := os.Getenv("INFERX_API_KEY")
+	if len(apiKey) > 8 {
+		apiKey = apiKey[:4] + strings.Repeat("•", len(apiKey)-8) + apiKey[len(apiKey)-4:]
+	} else if len(apiKey) > 0 {
+		apiKey = strings.Repeat("•", len(apiKey))
+	} else {
+		apiKey = dimStyle.Render("(not set — export INFERX_API_KEY)")
+	}
+	sb.WriteString(fmt.Sprintf("  %-12s %s\n", "API Key:", apiKey))
+	sb.WriteString(fmt.Sprintf("  %-12s %s\n", "Model:", dimStyle.Render("google/gemma-4-31b")))
+	sb.WriteString(fmt.Sprintf("  %-12s %s\n\n", "Proxy:", dimStyle.Render("https://litellm-proxy-93ef.onrender.com/v1")))
+
+	// ── Theme ────────────────────────────────────────────────────────────
+	sb.WriteString(sectionStyle.Render("── Theme") + "\n\n")
+	for i, name := range ui.ThemeOrder {
+		th := ui.Themes[name]
+		cursor := "  "
+		label := th.Name
+		dot := lipgloss.NewStyle().Foreground(th.Primary).Render("●")
+		isCurrent := name == m.themeName || (m.themeName == "" && name == "default")
+		if i == m.settingsCursor {
+			cursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
+			label = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		tag := ""
+		if isCurrent {
+			tag = lipgloss.NewStyle().Foreground(t.Success).Render("  ✓ active")
+		}
+		sb.WriteString(fmt.Sprintf("%s%s %s%s\n", cursor, dot, label, tag))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("  ↑↓ navigate · enter: apply theme") + "\n\n")
+
+	// ── Token Usage (current session) ─────────────────────────────────
+	sb.WriteString(sectionStyle.Render("── Session Tokens") + "\n\n")
+	if m.sessionIn == 0 && m.sessionOut == 0 {
+		sb.WriteString(dimStyle.Render("  No activity this session yet.") + "\n\n")
+	} else {
+		chartW := w - 8
+		if chartW > 60 {
+			chartW = 60
+		}
+		if chartW < 10 {
+			chartW = 10
+		}
+		// Bar chart: in vs out for current session.
+		bc := barchart.New(chartW, 8,
+			barchart.WithNoAutoBarWidth(),
+			barchart.WithBarWidth(chartW/2-2),
+			barchart.WithBarGap(2),
+			barchart.WithStyles(
+				lipgloss.NewStyle().Foreground(t.Dim),
+				lipgloss.NewStyle().Foreground(t.Dim),
+			),
+		)
+		bc.Push(barchart.BarData{
+			Label: "Input",
+			Values: []barchart.BarValue{{
+				Name:  "in",
+				Value: float64(m.sessionIn),
+				Style: lipgloss.NewStyle().Foreground(t.Secondary),
+			}},
+		})
+		bc.Push(barchart.BarData{
+			Label: "Output",
+			Values: []barchart.BarValue{{
+				Name:  "out",
+				Value: float64(m.sessionOut),
+				Style: lipgloss.NewStyle().Foreground(t.Primary),
+			}},
+		})
+		bc.Draw()
+		sb.WriteString("  " + strings.ReplaceAll(bc.View(), "\n", "\n  ") + "\n")
+		sb.WriteString(fmt.Sprintf("  %s  in: %s   out: %s\n\n",
+			dimStyle.Render("session"),
+			lipgloss.NewStyle().Foreground(t.Secondary).Render(fmtTokens(m.sessionIn)),
+			lipgloss.NewStyle().Foreground(t.Primary).Render(fmtTokens(m.sessionOut)),
+		))
+	}
+
+	// ── Historical usage sparklines ──────────────────────────────────────
+	if len(m.usageLogs) > 0 {
+		sb.WriteString(sectionStyle.Render("── Usage History (last 20 sessions)") + "\n\n")
+		sparkW := w - 8
+		if sparkW > 60 {
+			sparkW = 60
+		}
+		if sparkW < 8 {
+			sparkW = 8
+		}
+
+		spIn := sparkline.New(sparkW, 4,
+			sparkline.WithStyle(lipgloss.NewStyle().Foreground(t.Secondary)),
+		)
+		spOut := sparkline.New(sparkW, 4,
+			sparkline.WithStyle(lipgloss.NewStyle().Foreground(t.Primary)),
+		)
+		for _, e := range m.usageLogs {
+			spIn.Push(float64(e.InputTokens))
+			spOut.Push(float64(e.OutputTokens))
+		}
+		spIn.DrawBraille()
+		spOut.DrawBraille()
+		sb.WriteString("  " + lipgloss.NewStyle().Foreground(t.Secondary).Render("▸ Input tokens") + "\n")
+		sb.WriteString("  " + strings.ReplaceAll(spIn.View(), "\n", "\n  ") + "\n")
+		sb.WriteString("  " + lipgloss.NewStyle().Foreground(t.Primary).Render("▸ Output tokens") + "\n")
+		sb.WriteString("  " + strings.ReplaceAll(spOut.View(), "\n", "\n  ") + "\n\n")
+	}
+
+	// ── Lifetime Stats ───────────────────────────────────────────────────
+	sb.WriteString(sectionStyle.Render("── Lifetime Stats") + "\n\n")
+	if m.db == nil || (m.usageTotalIn == 0 && m.usageTotalOut == 0) {
+		sb.WriteString(dimStyle.Render("  No usage recorded yet.") + "\n\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("  Sessions logged:  %s\n",
+			accent.Render(fmt.Sprintf("%d", len(m.usageLogs)))))
+		sb.WriteString(fmt.Sprintf("  Total input:      %s\n",
+			lipgloss.NewStyle().Foreground(t.Secondary).Bold(true).Render(fmtTokens(m.usageTotalIn))))
+		sb.WriteString(fmt.Sprintf("  Total output:     %s\n\n",
+			lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(fmtTokens(m.usageTotalOut))))
+	}
+
+	sb.WriteString(dimStyle.Render("  esc: back to dashboard"))
+
+	return borderStyle.Render(sb.String())
+}
+
+// ── MCP view ────────────────────────────────────────────────────────────
+
+func (m model) updateMCPView(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	statuses := m.mcpManager.Statuses()
+	switch msg.String() {
+	case "esc", "ctrl+p":
+		m.viewMode = ViewDashboard
+	case "up", "k":
+		if m.mcpCursor > 0 {
+			m.mcpCursor--
+		}
+	case "down", "j":
+		if m.mcpCursor < len(statuses)-1 {
+			m.mcpCursor++
+		}
+	case "enter", " ":
+		if m.mcpCursor < len(statuses) {
+			s := statuses[m.mcpCursor]
+			ctx := context.Background()
+			go m.mcpManager.ToggleServer(ctx, s.Config.Name, !s.Config.Enabled) //nolint:errcheck
+		}
+	case "e":
+		// Open config file in $EDITOR or default editor.
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "nano"
+		}
+		cfgPath := m.mcpManager.ConfigPath()
+		c := exec.Command(editor, cfgPath)
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		_ = c.Run()
+	}
+	return m, nil
+}
+
+// renderMCPView renders the MCP server dashboard.
+func (m model) renderMCPView() string {
+	statuses := m.mcpManager.Statuses()
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+
+	var sb strings.Builder
+	sb.WriteString(dashTitle.Render("⚙  MCP Servers") + "\n")
+	sb.WriteString(dashSubtitle.Render("esc back  ↑↓ navigate  enter enable/disable  e edit config JSON") + "\n\n")
+
+	sep := lipgloss.NewStyle().Foreground(brandDim).Render(strings.Repeat("─", min(w-12, 60)))
+	sb.WriteString("  " + sep + "\n")
+
+	for i, s := range statuses {
+		var statusStr string
+		if s.Config.Enabled && s.Ready {
+			toolCount := fmt.Sprintf("%d tools", len(s.Tools))
+			statusStr = lipgloss.NewStyle().Foreground(brandSuccess).Bold(true).Render("● ready") +
+				lipgloss.NewStyle().Foreground(brandDim).Render("  "+toolCount)
+		} else if s.Config.Enabled {
+			statusStr = lipgloss.NewStyle().Foreground(brandAccent).Render("◌ connecting...")
+		} else {
+			statusStr = lipgloss.NewStyle().Foreground(brandDim).Render("○ disabled")
+		}
+
+		name := fmt.Sprintf("%-26s", s.Config.Name)
+		if i == m.mcpCursor {
+			sb.WriteString(dashItemSelected.Render("▶ "+name) + statusStr + "\n")
+		} else {
+			sb.WriteString(dashItemNormal.Render("  "+name) + statusStr + "\n")
+		}
+	}
+
+	sb.WriteString("\n  " + sep + "\n")
+	sb.WriteString("\n" + dashHint.Render("Config file: "+m.mcpManager.ConfigPath()))
+	sb.WriteString("\n" + dashHint.Render("Add a server: edit the JSON file directly with 'e', then restart Themis"))
+
+	return lipgloss.NewStyle().Padding(1, 2).Render(sb.String())
+}
+
+// ── Image picker ─────────────────────────────────────────────────────────
+
+// pickImageFile spawns an OS file-manager / dialog to pick an image.
+func pickImageFile() tea.Cmd {
+	return func() tea.Msg {
+		path := openImageDialog()
+		return imagePickedMsg{path: path}
+	}
+}
+
+// openImageDialog tries common GUI file pickers in order, falling back to a
+// simple terminal prompt if none are available.
+func openImageDialog() string {
+	if runtime.GOOS == "windows" {
+		// Use PowerShell Windows Forms file dialog.
+		script := `Add-Type -AssemblyName System.Windows.Forms; ` +
+			`$f = New-Object System.Windows.Forms.OpenFileDialog; ` +
+			`$f.Filter = 'Images|*.png;*.jpg;*.jpeg;*.gif;*.webp'; ` +
+			`if ($f.ShowDialog() -eq 'OK') { $f.FileName }`
+		out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+		return ""
+	}
+	// Linux / macOS: zenity (GNOME), kdialog (KDE), yad, osascript (macOS)
+	pickers := [][]string{
+		{"zenity", "--file-selection", "--title=Select Image",
+			"--file-filter=Images | *.png *.jpg *.jpeg *.gif *.webp"},
+		{"kdialog", "--getopenfilename", ".", "*.png *.jpg *.jpeg *.gif *.webp"},
+		{"yad", "--file-selection", "--title=Select Image"},
+	}
+	if runtime.GOOS == "darwin" {
+		pickers = append([][]string{
+			{"osascript", "-e", `choose file with prompt "Select Image" of type {"public.image"}`},
+		}, pickers...)
+	}
+	for _, args := range pickers {
+		out, err := exec.Command(args[0], args[1:]...).Output()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+	}
+	return ""
 }
 
 // ── Main ────────────────────────────────────────────────────────────────

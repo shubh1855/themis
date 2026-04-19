@@ -2,11 +2,15 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	openai "github.com/sashabaranov/go-openai"
@@ -28,7 +32,20 @@ type ToolCallMsg struct {
 type ToolResultMsg struct {
 	Agent  AgentID
 	Tool   string
+	Args   map[string]interface{}
 	Result string
+}
+
+// TaskPlanMsg is sent when an agent calls task_plan to declare their steps.
+type TaskPlanMsg struct {
+	Agent AgentID
+	Steps []string
+}
+
+// TaskStepDoneMsg is sent when an agent calls complete_step.
+type TaskStepDoneMsg struct {
+	Agent AgentID
+	Step  string
 }
 
 type ReactAnswerMsg struct {
@@ -50,6 +67,14 @@ type ReactErrorMsg struct {
 	Err   error
 }
 
+// TokenUpdateMsg carries live and final token counts for the status bar.
+type TokenUpdateMsg struct {
+	Agent        AgentID
+	InputTokens  int
+	OutputTokens int
+	IsFinal      bool // true = exact counts from API; false = live estimate
+}
+
 // ReactStepLimitMsg is sent when an agent exhausts its step budget.
 // Zeus uses this to re-plan and continue rather than hard-failing.
 type ReactStepLimitMsg struct {
@@ -62,6 +87,32 @@ type ReactStepLimitMsg struct {
 type ToolExecutor func(tool string, args map[string]interface{}) (string, error)
 
 const maxReactSteps = 30
+
+// pruneMessages keeps the message window manageable: all leading system messages,
+// the original user message, then only the last 6 assistant/user exchange pairs.
+// This prevents token explosion over long ReAct runs.
+func pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	const keepPairs = 6 // keep last N assistant+observation pairs
+	// Find where non-system messages start.
+	sysEnd := 0
+	for sysEnd < len(msgs) && msgs[sysEnd].Role == openai.ChatMessageRoleSystem {
+		sysEnd++
+	}
+	// original user message is always at sysEnd
+	fixedEnd := sysEnd + 1
+	if fixedEnd > len(msgs) {
+		return msgs
+	}
+	tail := msgs[fixedEnd:]
+	maxTail := keepPairs * 2
+	if len(tail) <= maxTail {
+		return msgs
+	}
+	pruned := make([]openai.ChatCompletionMessage, 0, fixedEnd+maxTail)
+	pruned = append(pruned, msgs[:fixedEnd]...)
+	pruned = append(pruned, tail[len(tail)-maxTail:]...)
+	return pruned
+}
 
 
 var agentTools = map[AgentID][]string{
@@ -115,34 +166,70 @@ var toolDescs = map[string]string{
 	"browser_view":   `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
 	"browser_run_js": `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
 	"browser_close":  `{"tool":"browser_close"} — closes the browser if open`,
+	"task_plan":      `{"tool":"task_plan","steps":["step 1","step 2",...]} — declare all planned steps upfront (REQUIRED at start of every task)`,
+	"complete_step":  `{"tool":"complete_step","step":"<step name>"} — mark a planned step as done`,
 }
 
-func reactSuffix(agent AgentID) string {
+func reactSuffix(agent AgentID, mcpToolDescs string) string {
 	tools := agentTools[agent]
 	if len(tools) == 0 {
 		return "\n\nYou have no tools. Respond with THOUGHT then ANSWER only.\n\nTHOUGHT: <reasoning>\nANSWER: <your JSON output>"
 	}
 	var sb strings.Builder
-	sb.WriteString("\n\n--- ReAct Protocol ---\nYou MUST follow this exact format:\n\n")
+	sb.WriteString("\n\n--- ReAct Protocol ---\nFollow this format:\n\n")
 	sb.WriteString("THOUGHT: <your reasoning>\nACTION: <one JSON tool call>\n")
-	sb.WriteString("Then WAIT for the system to provide OBSERVATION.\n")
+	sb.WriteString("Then WAIT for OBSERVATION.\n")
 	sb.WriteString("Repeat THOUGHT→ACTION→OBSERVATION as needed.\n")
-	sb.WriteString("When done: THOUGHT: <final reasoning>\\nANSWER: <complete response>\n\n")
-	sb.WriteString("RULES:\n- One ACTION per turn, then wait\n- ACTION must be valid JSON on one line\n- If no tool needed, skip ACTION and go straight to ANSWER\n\n")
+	sb.WriteString("When done: THOUGHT: <final reasoning>\nANSWER: <complete response>\n\n")
+	sb.WriteString("RULES:\n")
+	sb.WriteString("- For greetings, simple questions, or single-step tasks: skip ACTION, go straight to ANSWER\n")
+	sb.WriteString("- For multi-step tasks (3+ steps): call task_plan first with all planned steps\n")
+	sb.WriteString("- One ACTION per turn, then wait for OBSERVATION\n")
+	sb.WriteString("- Call complete_step each time a step is finished\n")
+	sb.WriteString("- ACTION must be valid JSON on one line\n\n")
 	sb.WriteString("YOUR AVAILABLE TOOLS:\n")
+	// Always include task management tools.
+	sb.WriteString(toolDescs["task_plan"] + "\n")
+	sb.WriteString(toolDescs["complete_step"] + "\n")
 	for _, t := range tools {
 		if d, ok := toolDescs[t]; ok {
 			sb.WriteString(d + "\n")
 		}
 	}
+	// Append live MCP tool descriptions (dynamic, from connected servers).
+	if mcpToolDescs != "" {
+		sb.WriteString("\nMCP TOOLS (connected servers):\n")
+		sb.WriteString(mcpToolDescs)
+	}
 	return sb.String()
 }
 
+func parseStringSlice(args map[string]interface{}, key string) []string {
+	raw, ok := args[key]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return v
+	}
+	return nil
+}
 
-func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx string, executor ToolExecutor, ch chan<- tea.Msg) {
+
+func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx string, images []string, mcpToolDescs string, executor ToolExecutor, ch chan<- tea.Msg) {
 	defer close(ch)
 
-	sysPrompt := agentPrompts[agent] + reactSuffix(agent)
+	dateNote := "\n\nToday's date: " + time.Now().Format("2006-01-02") + " (year " + time.Now().Format("2006") + ")"
+	sysPrompt := agentPrompts[agent] + reactSuffix(agent, mcpToolDescs) + dateNote
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
 	}
@@ -151,9 +238,34 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 			Role: openai.ChatMessageRoleSystem, Content: "Context:\n" + extraCtx,
 		})
 	}
-	messages = append(messages, openai.ChatCompletionMessage{
-		Role: openai.ChatMessageRoleUser, Content: userPrompt,
-	})
+
+	// Build user message — text only or multimodal with images.
+	if len(images) > 0 {
+		parts := []openai.ChatMessagePart{
+			{Type: openai.ChatMessagePartTypeText, Text: userPrompt},
+		}
+		for _, imgPath := range images {
+			dataURI, err := imageToDataURI(imgPath)
+			if err != nil {
+				continue
+			}
+			parts = append(parts, openai.ChatMessagePart{
+				Type: openai.ChatMessagePartTypeImageURL,
+				ImageURL: &openai.ChatMessageImageURL{
+					URL:    dataURI,
+					Detail: openai.ImageURLDetailAuto,
+				},
+			})
+		}
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role:         openai.ChatMessageRoleUser,
+			MultiContent: parts,
+		})
+	} else {
+		messages = append(messages, openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleUser, Content: userPrompt,
+		})
+	}
 
 	var lastThought string
 
@@ -180,20 +292,43 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 		if action != nil {
 			ch <- ToolCallMsg{Agent: agent, Tool: action.tool, Args: action.args, Display: action.raw}
 
-			result, execErr := executor(action.tool, action.args)
-			if execErr != nil {
-				result = "ERROR: " + execErr.Error()
+			// Intercept task planning tools before routing to executor.
+			var result string
+			var execErr error
+			switch action.tool {
+			case "task_plan":
+				steps := parseStringSlice(action.args, "steps")
+				if len(steps) > 0 {
+					ch <- TaskPlanMsg{Agent: agent, Steps: steps}
+					result = fmt.Sprintf("Plan registered: %d steps", len(steps))
+				} else {
+					result = "task_plan: no steps provided"
+				}
+			case "complete_step":
+				step, _ := action.args["step"].(string)
+				if step != "" {
+					ch <- TaskStepDoneMsg{Agent: agent, Step: step}
+					result = "step marked complete: " + step
+				} else {
+					result = "complete_step: missing 'step'"
+				}
+			default:
+				result, execErr = executor(action.tool, action.args)
+				if execErr != nil {
+					result = "ERROR: " + execErr.Error()
+				}
 			}
 			if len(result) > 4000 {
 				result = result[:4000] + "\n...(truncated)"
 			}
 
-			ch <- ToolResultMsg{Agent: agent, Tool: action.tool, Result: result}
+			ch <- ToolResultMsg{Agent: agent, Tool: action.tool, Args: action.args, Result: result}
 
 			messages = append(messages,
 				openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: full},
 				openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "OBSERVATION: " + result},
 			)
+			messages = pruneMessages(messages)
 			continue
 		}
 
@@ -212,9 +347,22 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 
 
 func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, agent AgentID, ch chan<- tea.Msg) (string, error) {
+	// Estimate input tokens before sending (4 chars ≈ 1 token).
+	inputEst := estimateTokens(messages)
+	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: 0}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	stream, err := client.CreateChatCompletionStream(
-		context.Background(),
-		openai.ChatCompletionRequest{Model: reactModel, Messages: messages},
+		ctx,
+		openai.ChatCompletionRequest{
+			Model:    reactModel,
+			Messages: messages,
+			StreamOptions: &openai.StreamOptions{
+				IncludeUsage: true,
+			},
+		},
 	)
 	if err != nil {
 		return nonStreamCall(client, messages, agent, ch)
@@ -223,6 +371,8 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 
 	var full strings.Builder
 	var buf strings.Builder
+	var outChars int
+	var lastTokenSend int
 
 	for {
 		resp, err := stream.Recv()
@@ -235,6 +385,17 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 			}
 			return "", fmt.Errorf("stream: %w", err)
 		}
+
+		// Exact usage in the final sentinel chunk (no choices).
+		if resp.Usage != nil && resp.Usage.TotalTokens > 0 {
+			ch <- TokenUpdateMsg{
+				Agent:        agent,
+				InputTokens:  resp.Usage.PromptTokens,
+				OutputTokens: resp.Usage.CompletionTokens,
+				IsFinal:      true,
+			}
+		}
+
 		if len(resp.Choices) == 0 {
 			continue
 		}
@@ -242,6 +403,17 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 		chunk := resp.Choices[0].Delta.Content
 		full.WriteString(chunk)
 		buf.WriteString(chunk)
+		outChars += len(chunk)
+
+		// Send live token estimate every ~40 output chars.
+		if outChars-lastTokenSend >= 40 {
+			ch <- TokenUpdateMsg{
+				Agent:        agent,
+				InputTokens:  inputEst,
+				OutputTokens: outChars / 4,
+			}
+			lastTokenSend = outChars
+		}
 
 		if buf.Len() > 40 || strings.ContainsAny(chunk, "\n") {
 			ch <- ThinkChunkMsg{Agent: agent, Chunk: buf.String()}
@@ -252,12 +424,25 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 	if buf.Len() > 0 {
 		ch <- ThinkChunkMsg{Agent: agent, Chunk: buf.String()}
 	}
+	// Send final estimate if API didn't provide exact usage.
+	ch <- TokenUpdateMsg{
+		Agent:        agent,
+		InputTokens:  inputEst,
+		OutputTokens: outChars / 4,
+		IsFinal:      true,
+	}
 	return full.String(), nil
 }
 
 func nonStreamCall(client *openai.Client, messages []openai.ChatCompletionMessage, agent AgentID, ch chan<- tea.Msg) (string, error) {
+	inputEst := estimateTokens(messages)
+	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: 0}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	resp, err := client.CreateChatCompletion(
-		context.Background(),
+		ctx,
 		openai.ChatCompletionRequest{Model: reactModel, Messages: messages},
 	)
 	if err != nil {
@@ -268,7 +453,29 @@ func nonStreamCall(client *openai.Client, messages []openai.ChatCompletionMessag
 	}
 	text := resp.Choices[0].Message.Content
 	ch <- ThinkChunkMsg{Agent: agent, Chunk: text}
+
+	outTok := len(text) / 4
+	if resp.Usage.CompletionTokens > 0 {
+		inputEst = resp.Usage.PromptTokens
+		outTok = resp.Usage.CompletionTokens
+	}
+	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: outTok, IsFinal: true}
 	return text, nil
+}
+
+// estimateTokens returns a rough token count across all messages (4 chars ≈ 1 token).
+func estimateTokens(messages []openai.ChatCompletionMessage) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content)/4 + 4
+		for _, p := range m.MultiContent {
+			total += len(p.Text)/4 + 4
+			if p.ImageURL != nil {
+				total += 1000 // rough image token overhead
+			}
+		}
+	}
+	return total
 }
 
 
@@ -361,10 +568,29 @@ func parseToolJSON(s string) *parsedAction {
 }
 
 
-func StartReact(client *openai.Client, agent AgentID, prompt string, ctx string, executor ToolExecutor) (chan tea.Msg, tea.Cmd) {
+func StartReact(client *openai.Client, agent AgentID, prompt string, ctx string, images []string, mcpToolDescs string, executor ToolExecutor) (chan tea.Msg, tea.Cmd) {
 	ch := make(chan tea.Msg, 32)
-	go RunReact(client, agent, prompt, ctx, executor, ch)
+	go RunReact(client, agent, prompt, ctx, images, mcpToolDescs, executor, ch)
 	return ch, WaitReact(ch)
+}
+
+func imageToDataURI(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	mime := "image/jpeg"
+	switch ext {
+	case ".png":
+		mime = "image/png"
+	case ".gif":
+		mime = "image/gif"
+	case ".webp":
+		mime = "image/webp"
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mime, encoded), nil
 }
 
 func WaitReact(ch <-chan tea.Msg) tea.Cmd {

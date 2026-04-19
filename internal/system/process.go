@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
@@ -35,7 +36,7 @@ func (pt *ProcessTracker) StartBackground(ctx context.Context, command string, a
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
 
-	logFile := fmt.Sprintf("/tmp/agent_proc_%d.log", os.Getpid())
+	logFile := filepath.Join(os.TempDir(), fmt.Sprintf("agent_proc_%d.log", os.Getpid()))
 	f, err := os.Create(logFile)
 	if err != nil {
 		cancel()

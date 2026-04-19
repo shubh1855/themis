@@ -114,6 +114,54 @@ func (g *TaskGraph) AddToolCall(id, summary string) {
 	}
 }
 
+// AddPlannedSteps adds all steps as TaskPending children of parentID, returned as IDs.
+func (g *TaskGraph) AddPlannedSteps(parentID string, steps []string) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ids := make([]string, 0, len(steps))
+	parent, ok := g.nodes[parentID]
+	if !ok && g.Root != nil {
+		parent = g.Root
+	}
+	for _, step := range steps {
+		id := g.nextID()
+		node := &TaskNode{ID: id, Agent: "step", Label: step, Status: TaskPending}
+		g.nodes[id] = node
+		if parent != nil {
+			parent.Children = append(parent.Children, node)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// CompleteStepByLabel marks the first TaskPending or TaskRunning node whose label
+// matches (case-insensitive prefix) as TaskDone.
+func (g *TaskGraph) CompleteStepByLabel(label string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	lower := strings.ToLower(label)
+	for _, n := range g.nodes {
+		if (n.Status == TaskPending || n.Status == TaskRunning) &&
+			strings.Contains(strings.ToLower(n.Label), lower) {
+			n.Status = TaskDone
+			return
+		}
+	}
+}
+
+// ActivateNextPending sets the first TaskPending node to TaskRunning.
+func (g *TaskGraph) ActivateNextPending() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, n := range g.nodes {
+		if n.Status == TaskPending {
+			n.Status = TaskRunning
+			return
+		}
+	}
+}
+
 func (g *TaskGraph) FindByAgent(agent string) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()

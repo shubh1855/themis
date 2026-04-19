@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/files"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/mcp"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/models"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/scraper"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/system"
 )
 
-func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (string, error) {
+func NewReactExecutor(rootDir string, mcpMgr *mcp.Manager) func(string, map[string]interface{}) (string, error) {
 	fm := files.NewManager(rootDir)
 	deps := NewDependencies(rootDir)
 	router := NewRouter(deps)
@@ -208,6 +211,32 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 		case "browser_close":
 			return scraper.BrowserClose(), nil
 
+		case "start_background":
+			// Route to router for the actual process start.
+			resp := ExecuteTool(context.Background(), models.ToolRequest{Tool: tool, Args: args}, router)
+			if !resp.Success {
+				return "", fmt.Errorf("%s", resp.Error)
+			}
+			result := ""
+			if s, ok := resp.Data.(string); ok {
+				result = s
+			} else {
+				b, _ := json.MarshalIndent(resp.Data, "", "  ")
+				result = string(b)
+			}
+			// Auto-preview web dev servers in the rod browser.
+			command := models.ArgString(args, "command")
+			if port := detectWebDevPort(command); port != "" {
+				url := "http://localhost:" + port
+				result += "\n🌐 Detected web server on port " + port + " — opening in browser when ready..."
+				go func() {
+					if waitTCPPort("localhost", port, 45*time.Second) {
+						_ = scraper.BrowserOpen(url)
+					}
+				}()
+			}
+			return result, nil
+
 		case "npm_search", "pip_search", "cargo_search", "go_search":
 			query := models.ArgString(args, "query")
 			if query == "" {
@@ -225,6 +254,13 @@ func NewReactExecutor(rootDir string) func(string, map[string]interface{}) (stri
 			return string(b), nil
 
 		default:
+			// Route MCP tools through the MCP manager.
+			if mcp.IsMCPTool(tool) {
+				if mcpMgr == nil {
+					return "", fmt.Errorf("MCP manager not initialized")
+				}
+				return mcpMgr.CallTool(context.Background(), tool, args)
+			}
 			// Route unrecognized tools through the Router (handles git/github/registry/etc.)
 			resp := ExecuteTool(context.Background(), models.ToolRequest{
 				Tool: tool,
@@ -260,4 +296,86 @@ func buildFileCmd(path string) string {
 	default:
 		return ""
 	}
+}
+
+// webDevKeywords are command fragments that indicate a web dev server.
+var webDevKeywords = []string{
+	"next dev", "next start",
+	"vite", "vite dev", "vite preview",
+	"npm run dev", "npm start", "npm run serve", "npm run preview",
+	"yarn dev", "yarn start",
+	"pnpm dev", "pnpm start",
+	"bun dev", "bun run dev",
+	"react-scripts start",
+	"astro dev",
+	"nuxt dev",
+	"remix dev",
+	"svelte-kit dev",
+	"python -m http.server", "python3 -m http.server",
+	"npx serve", "serve .",
+}
+
+// frameworkPorts maps framework keywords to their default dev ports.
+var frameworkPorts = map[string]string{
+	"next":          "3000",
+	"react-scripts": "3000",
+	"create-react":  "3000",
+	"astro":         "4321",
+	"nuxt":          "3000",
+	"remix":         "3000",
+	"svelte":        "5173",
+	"vite":          "5173",
+	"angular":       "4200",
+	"vue":           "5173",
+	"python":        "8000",
+	"serve":         "3000",
+}
+
+var portFlagRe = regexp.MustCompile(`(?:--port|-p)\s+(\d+)`)
+
+// detectWebDevPort returns the port a web dev command will listen on, or ""
+// if the command doesn't look like a web dev server.
+func detectWebDevPort(command string) string {
+	lower := strings.ToLower(command)
+
+	isWeb := false
+	for _, kw := range webDevKeywords {
+		if strings.Contains(lower, kw) {
+			isWeb = true
+			break
+		}
+	}
+	if !isWeb {
+		return ""
+	}
+
+	// Explicit --port / -p flag takes priority.
+	if m := portFlagRe.FindStringSubmatch(command); len(m) == 2 {
+		return m[1]
+	}
+
+	// Framework-specific defaults.
+	for kw, port := range frameworkPorts {
+		if strings.Contains(lower, kw) {
+			return port
+		}
+	}
+
+	// Generic fallback for known dev-server patterns.
+	return "3000"
+}
+
+// waitTCPPort polls until host:port accepts a TCP connection or the timeout expires.
+func waitTCPPort(host, port string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	addr := net.JoinHostPort(host, port)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			conn.Close()
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }

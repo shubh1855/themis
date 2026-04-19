@@ -97,6 +97,36 @@ func BrowserView(url string) (string, error) {
 	return text, nil
 }
 
+// BrowserOpen navigates to a URL and shows it in the rod browser window without
+// blocking to extract page text. Used for auto-previewing web dev servers.
+func BrowserOpen(url string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if browser == nil {
+		b, err := launchBrowser()
+		if err != nil {
+			return err
+		}
+		browser = b
+	}
+
+	if page == nil {
+		p, err := browser.Page(proto.TargetCreateTarget{URL: url})
+		if err != nil {
+			return fmt.Errorf("open page: %w", err)
+		}
+		page = p
+	} else {
+		if err := page.Navigate(url); err != nil {
+			return fmt.Errorf("navigate: %w", err)
+		}
+	}
+	// Don't wait for full load — just fire and return so the user sees the
+	// browser window appear immediately.
+	return nil
+}
+
 func BrowserRunJS(script string) (string, error) {
 	mu.Lock()
 	defer mu.Unlock()
