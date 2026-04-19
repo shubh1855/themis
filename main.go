@@ -278,9 +278,17 @@ type model struct {
 	verboseMode       bool          // true = show all THOUGHT streaming; false = compact loading
 	nonVerboseSpinner spinner.Model // a different spinner shown in quiet mode
 	thinkLineCount    int           // how many think lines suppressed (shown in quiet status)
-	thinkTruncated    bool          // true when long live thinking text was capped for UI performance
 	viewportNeedsSync bool          // debounce flag for viewport string re-renders
 	viewportLastSync  time.Time     // limits full viewport reflow while agents stream tokens
+	
+    // ── Render cache ──
+	renderedCache []string
+	renderedRaw   []string
+	renderedW     int
+
+	// ── Full view cache ──
+	viewDirty bool   // set to true when anything visible changed
+	viewCache string // cached output of renderChat()
 
 	taskGraph    *ui.TaskGraph
 	activeTaskID string
@@ -638,8 +646,41 @@ func (m *model) renderContent() string {
 	if w <= 0 {
 		w = 80
 	}
-	return ui.OutputStyle.Copy().Width(w).Render(
-		strings.Join(m.history, "\n\n"))
+
+	// Dynamic word-wrap cache mechanism
+	// Recalculating ANSI-wraps purely with lipgloss across 100kb+ of terminal history 10 times a second 
+	// is the direct root cause of UI frame latency when agents spin up.
+	// By caching historical formatted blocks, we map the workload from O(N) to O(1) instantly.
+
+	if m.renderedW != w {
+		m.renderedCache = make([]string, 0, len(m.history))
+		m.renderedRaw = make([]string, 0, len(m.history))
+		m.renderedW = w
+	}
+
+	style := ui.OutputStyle.Copy().Width(w)
+	out := make([]string, len(m.history))
+
+	for i, raw := range m.history {
+		if i < len(m.renderedCache) && i < len(m.renderedRaw) && m.renderedRaw[i] == raw {
+			// Cache hit
+			out[i] = m.renderedCache[i]
+		} else {
+			// Cache miss (newly generated, updating terminal block, or resized bounds)
+			formatted := style.Render(raw)
+
+			if i < len(m.renderedCache) {
+				m.renderedCache[i] = formatted
+				m.renderedRaw[i] = raw
+			} else {
+				m.renderedCache = append(m.renderedCache, formatted)
+				m.renderedRaw = append(m.renderedRaw, raw)
+			}
+			out[i] = formatted
+		}
+	}
+
+	return strings.Join(out, "\n\n")
 }
 
 func (m *model) syncViewportNow(followBottom bool) {
@@ -650,6 +691,7 @@ func (m *model) syncViewportNow(followBottom bool) {
 	}
 	m.viewportNeedsSync = false
 	m.viewportLastSync = time.Now()
+	m.viewDirty = true
 }
 
 func (m *model) syncViewportIfNeeded(force bool) {
@@ -726,7 +768,6 @@ func (m *model) startThinkBlock(agent llm.AgentID) {
 	m.thinkLineCount = 0
 	m.thinkStr = ""
 	m.thinkDirty = false
-	m.thinkTruncated = false
 	m.thinkAgent = agent
 	if !m.verboseMode {
 		// Quiet mode: push a single placeholder line we'll update in-place
@@ -780,9 +821,6 @@ func (m *model) endThinkBlock() {
 		} else if m.thinkStr != "" {
 			clean := strings.TrimSpace(m.thinkStr)
 			if clean != "" {
-				if m.thinkTruncated {
-					clean = "[older thinking omitted to keep scrolling responsive]\n\n" + clean
-				}
 				header := badge + " › " + ui.ThinkStyle.Render("thinking finished")
 				m.history[m.thinkIdx] = header + "\n" + renderMarkdown(clean)
 				m.updateViewport()
@@ -792,7 +830,6 @@ func (m *model) endThinkBlock() {
 	m.thinkIdx = -1
 	m.thinkStr = ""
 	m.thinkDirty = false
-	m.thinkTruncated = false
 	m.thinkLineCount = 0
 	m.thinkAgent = ""
 }
@@ -963,6 +1000,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinner.TickMsg:
 		m.syncViewportIfNeeded(false)
+		m.viewDirty = true // spinner frame changed
 
 		if m.loading || m.running {
 			m.spinner, cmd = m.spinner.Update(msg)
@@ -977,6 +1015,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resizeView()
 		m.syncViewportNow(followBottom)
+		m.viewDirty = true
 
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionMotion {
@@ -988,6 +1027,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.viewMode {
 			case ViewChat:
 				m.viewport.LineUp(2)
+				m.viewDirty = true
 			case ViewDashboard:
 				m.dashCursor = moveIndex(m.dashCursor, -1, len(m.dashItems))
 			case ViewSettings:
@@ -1000,6 +1040,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.viewMode {
 			case ViewChat:
 				m.viewport.LineDown(2)
+				m.viewDirty = true
 			case ViewDashboard:
 				m.dashCursor = moveIndex(m.dashCursor, 1, len(m.dashItems))
 			case ViewSettings:
@@ -1665,7 +1706,15 @@ func (m model) View() string {
 	case ViewSettings:
 		return m.renderSettings()
 	default:
-		return m.renderChat()
+		// Cache renderChat() output — it's extremely expensive due to
+		// taskGraph.Render(), fitBlock(), and lipgloss.Join* running
+		// on every single View() call (30-50x/sec during streaming).
+		if !m.viewDirty && m.viewCache != "" {
+			return m.viewCache
+		}
+		m.viewCache = m.renderChat()
+		m.viewDirty = false
+		return m.viewCache
 	}
 }
 
