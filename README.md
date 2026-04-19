@@ -26,6 +26,26 @@ The application is a resilient Go monolith relying extensively on Bubble Tea for
 
 ---
 
+## Multi-Agent Hierarchy
+
+The backbone of Themis is a federation of expert personas, orchestrated under a strict delegation hierarchy. The top-level agent routes specific sub-tasks to downstream specialists, assembling their resolutions entirely autonomously.
+
+<p align="center">
+  <img src="images/architecture.png" alt="Themis Agent Workflow Architecture" width="100%" />
+</p>
+
+| Agent | Role & Hierarchy | Core Responsibilities |
+| :--- | :--- | :--- |
+| **Zeus** | **System Orchestrator** (Root) | Interprets original intent, provisions workspace rules, handles macro-planning, and delegates granular execution. |
+| **Athena** | **Architect & Researcher** | Designs scalable system structures, performs deep context lookups, and formulates implementation steps. |
+| **Hephaestus** | **Lead Engineer** | Synthesizes architectures to write native code, executes precise file IO, and refactors components natively. |
+| **Apollo** | **Validator & Debugger** | Audits code states, cross-references documentation (including local PDF extraction), and isolates traceback syntax. |
+| **Ares** | **QA & Security Tester** | Emulates browser automations (via go-rod), tests DOM interactivity, parses unhandled exceptions, and executes testing suites. |
+| **Hermes** | **Technical Documenter** | Standardizes code documentation, creates rigorous markdown artifacts, and clarifies systemic operational updates. |
+| **Prometheus**| **Version Control Lead** | Handles complex staging pipelines, branch checkouts, remote integrations, and PR creations securely. |
+
+---
+
 ## Codebase Breakdown
 
 The project follows strict Go best practices, abstracting complex logic into focused internal packages.
