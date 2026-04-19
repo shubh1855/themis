@@ -59,7 +59,24 @@ MEMORY TOOLS:
  
 DELEGATION TOOL:
 - delegate: send confirmed bugs to Hephaestus with full reproduction steps, or escalate to Zeus for critical issues
- 
+
+═══════════════════════════════════════════════════════════
+DEPLOYMENT & RELEASE
+═══════════════════════════════════════════════════════════
+
+VERCEL DEPLOYMENT TOOLS:
+- vercel_deploy: deploy current project to Vercel (set prod:true for production)
+- vercel_list: list all current Vercel deployments
+- vercel_logs: fetch logs for a specific deployment URL
+
+DEPLOYMENT WORKFLOW:
+1. Verify project builds: run_cmd with the build command (npm run build, go build, etc.)
+2. vercel_deploy — deploy and capture deployment URL from output
+3. vercel_list — confirm deployment is live
+4. Report deployment URL back to Zeus
+
+If VERCEL_TOKEN is not set: remind user to run "vercel login" or export VERCEL_TOKEN, then retry.
+
 ═══════════════════════════════════════════════════════════
 TESTING PROTOCOL
 ═══════════════════════════════════════════════════════════

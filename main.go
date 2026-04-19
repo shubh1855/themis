@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -180,7 +181,42 @@ const (
 	ViewTasks
 	ViewMCP
 	ViewSettings
+	ViewAgentPrompt
 )
+
+// promptBridge wires the agent goroutine's ask_user calls back to the TUI.
+// The agent sends an AgentPromptMsg on the react channel and blocks on ReplyCh.
+type promptBridge struct {
+	mu sync.RWMutex
+	ch chan tea.Msg
+}
+
+func (b *promptBridge) setChannel(ch chan tea.Msg) {
+	b.mu.Lock()
+	b.ch = ch
+	b.mu.Unlock()
+}
+
+func (b *promptBridge) ask(question, inputType string) string {
+	b.mu.RLock()
+	ch := b.ch
+	b.mu.RUnlock()
+	if ch == nil {
+		return ""
+	}
+	replyCh := make(chan string, 1)
+	select {
+	case ch <- llm.AgentPromptMsg{Question: question, InputType: inputType, ReplyCh: replyCh}:
+	case <-time.After(5 * time.Second):
+		return "timeout: no UI available"
+	}
+	select {
+	case reply := <-replyCh:
+		return reply
+	case <-time.After(5 * time.Minute):
+		return "timeout: user did not respond"
+	}
+}
 
 // ── Review types (existing) ─────────────────────────────────────────────
 
@@ -234,7 +270,15 @@ type model struct {
 	apiInput       textinput.Model
 	modelInput     textinput.Model
 	grokInput      textinput.Model
+	vercelInput    textinput.Model // Vercel token
 	isRecording    bool
+
+	// ── Agent prompt (ask_user tool) ──
+	bridge             *promptBridge
+	agentPromptQ       string
+	agentPromptT       string // "text" or "confirm"
+	agentPromptReplyCh chan string
+	agentPromptInput   textinput.Model
 
 	// ── Usage stats (loaded when settings opens) ──
 	usageLogs     []dbx.UsageEntry
@@ -313,12 +357,13 @@ type model struct {
 // ── DB init message ─────────────────────────────────────────────────────
 
 type dbReadyMsg struct {
-	db    *dbx.DB
-	err   error
-	items []dashItem
-	apiKey string
-	modelName string
-	grokKey string
+	db          *dbx.DB
+	err         error
+	items       []dashItem
+	apiKey      string
+	modelName   string
+	grokKey     string
+	vercelToken string
 }
 
 func initDB() tea.Msg {
@@ -365,8 +410,14 @@ func initDB() tea.Msg {
 		grokKey = dbGrok
 	}
 
+	vercelToken := os.Getenv("VERCEL_TOKEN")
+	if dbVercel, ok, _ := db.GetSetting(ctx, "vercel_token"); ok && dbVercel != "" {
+		vercelToken = dbVercel
+		_ = os.Setenv("VERCEL_TOKEN", dbVercel)
+	}
+
 	items := buildDashItems(db)
-	return dbReadyMsg{db: db, items: items, apiKey: apiKey, modelName: modelName, grokKey: grokKey}
+	return dbReadyMsg{db: db, items: items, apiKey: apiKey, modelName: modelName, grokKey: grokKey, vercelToken: vercelToken}
 }
 
 // ── Qdrant init message ─────────────────────────────────────────────────
@@ -606,6 +657,22 @@ func initialModel() model {
 	grokIn.CharLimit = 200
 	grokIn.Width = 40
 
+	vercelIn := textinput.New()
+	vercelIn.Placeholder = "paste Vercel token (vercel.com/account/tokens)"
+	vercelIn.CharLimit = 200
+	vercelIn.Width = 40
+	vercelIn.EchoMode = textinput.EchoPassword
+	if v := os.Getenv("VERCEL_TOKEN"); v != "" {
+		vercelIn.SetValue(v)
+	}
+
+	promptIn := textinput.New()
+	promptIn.Placeholder = "type your answer..."
+	promptIn.CharLimit = 500
+	promptIn.Width = 60
+
+	bridge := &promptBridge{}
+
 	apiKey := os.Getenv("INFERX_API_KEY")
 	if apiKey == "" {
 		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
@@ -627,13 +694,16 @@ func initialModel() model {
 		},
 		dashCursor:  0,
 		dashInput:   dashTA,
-		apiInput:    apiIn,
-		modelInput:  modIn,
-		grokInput:   grokIn,
-		client:      llmClient,
-		registry:    tools.NewRegistry(fs),
-		perms:       tools.NewPermissionManager(),
-		executor:    tools.NewReactExecutor(wd, mcpMgr),
+		apiInput:         apiIn,
+		modelInput:       modIn,
+		grokInput:        grokIn,
+		vercelInput:      vercelIn,
+		agentPromptInput: promptIn,
+		bridge:           bridge,
+		client:           llmClient,
+		registry:         tools.NewRegistry(fs),
+		perms:            tools.NewPermissionManager(),
+		executor:         tools.NewReactExecutor(wd, mcpMgr, bridge.ask),
 		viewport:    vp,
 		input:       ta,
 		spinner:     sp,
@@ -1152,6 +1222,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.themeName = "default"
 			}
 		}
+		if msg.apiKey != "" {
+			m.apiInput.SetValue(msg.apiKey)
+		}
+		if msg.modelName != "" {
+			m.modelInput.SetValue(msg.modelName)
+		}
+		if msg.grokKey != "" {
+			m.grokInput.SetValue(msg.grokKey)
+		}
+		if msg.vercelToken != "" {
+			m.vercelInput.SetValue(msg.vercelToken)
+		}
 		return m, nil
 
 	case usageLoadedMsg:
@@ -1276,6 +1358,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
 			m.reactCh = ch
+			m.bridge.setChannel(ch)
 			return m, tea.Batch(reactCmd, m.spinner.Tick)
 		}
 
@@ -1345,6 +1428,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeAgent = msg.Target
 		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, nil, m.mcpToolDescs(), m.executor)
 		m.reactCh = ch
+		m.bridge.setChannel(ch)
 		return m, tea.Batch(reactCmd, m.spinner.Tick)
 
 	case llm.ReactAnswerMsg:
@@ -1410,8 +1494,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
 			m.reactCh = ch
+			m.bridge.setChannel(ch)
 			return m, tea.Batch(reactCmd, m.spinner.Tick)
 		}
+
+	case llm.AgentPromptMsg:
+		m.agentPromptQ = msg.Question
+		m.agentPromptT = msg.InputType
+		m.agentPromptReplyCh = msg.ReplyCh
+		m.agentPromptInput.Reset()
+		m.agentPromptInput.SetValue("")
+		m.agentPromptInput.Focus()
+		m.viewMode = ViewAgentPrompt
+		m.viewDirty = true
+		return m, tea.Batch(llm.WaitReact(m.reactCh), textinput.Blink)
 
 	case llm.ReactDoneMsg:
 		m.endThinkBlock()
@@ -1438,6 +1534,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeTaskID = childID
 		ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, recoveryPrompt, ctx, nil, m.mcpToolDescs(), m.executor)
 		m.reactCh = ch
+		m.bridge.setChannel(ch)
 		m.loading = true
 		return m, tea.Batch(reactCmd, m.spinner.Tick)
 
@@ -1534,7 +1631,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Set cursor to current theme index.
 			for i, name := range ui.ThemeOrder {
 				if name == m.themeName {
-					m.settingsCursor = i + 3
+					m.settingsCursor = i + 4
 				}
 			}
 			return m, m.loadUsageData()
@@ -1580,6 +1677,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ── MCP view ──
 		if m.viewMode == ViewMCP {
 			return m.updateMCPView(msg)
+		}
+
+		// ── Agent prompt view ──
+		if m.viewMode == ViewAgentPrompt {
+			return m.updateAgentPrompt(msg)
 		}
 
 		// ── Settings view ──
@@ -1751,6 +1853,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Build combined context: chat history + Qdrant vector search
 			ch := make(chan tea.Msg, 32)
 			m.reactCh = ch
+			m.bridge.setChannel(ch)
 			return m, tea.Batch(
 				m.spinner.Tick,
 				llm.WaitReact(ch),
@@ -1912,6 +2015,8 @@ func (m model) View() string {
 		return m.renderMCPView()
 	case ViewSettings:
 		return m.renderSettings()
+	case ViewAgentPrompt:
+		return m.renderAgentPrompt()
 	default:
 		// Cache renderChat() output — it's extremely expensive due to
 		// taskGraph.Render(), fitBlock(), and lipgloss.Join* running
@@ -2393,12 +2498,12 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.settingsCursor--
 		}
 	case "down", "tab":
-		if m.settingsCursor < len(ui.ThemeOrder)+2 {
+		if m.settingsCursor < len(ui.ThemeOrder)+3 {
 			m.settingsCursor++
 		}
 	case "enter", " ":
-		if m.settingsCursor >= 3 {
-			themeIdx := m.settingsCursor - 3
+		if m.settingsCursor >= 4 {
+			themeIdx := m.settingsCursor - 4
 			if themeIdx < len(ui.ThemeOrder) {
 				name := ui.ThemeOrder[themeIdx]
 				m.themeName = name
@@ -2413,6 +2518,8 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.settingsCursor == 0 {
 		m.apiInput.Focus()
 		m.modelInput.Blur()
+		m.grokInput.Blur()
+		m.vercelInput.Blur()
 		m.apiInput, cmd = m.apiInput.Update(msg)
 		cmds = append(cmds, cmd)
 		if m.db != nil {
@@ -2423,6 +2530,8 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	} else if m.settingsCursor == 1 {
 		m.modelInput.Focus()
 		m.apiInput.Blur()
+		m.grokInput.Blur()
+		m.vercelInput.Blur()
 		m.modelInput, cmd = m.modelInput.Update(msg)
 		cmds = append(cmds, cmd)
 		if m.db != nil {
@@ -2433,19 +2542,33 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.grokInput.Focus()
 		m.apiInput.Blur()
 		m.modelInput.Blur()
+		m.vercelInput.Blur()
 		m.grokInput, cmd = m.grokInput.Update(msg)
 		cmds = append(cmds, cmd)
 		if m.db != nil {
 			_ = m.db.SetSetting(context.Background(), "grok_key", m.grokInput.Value())
 		}
+	} else if m.settingsCursor == 3 {
+		m.vercelInput.Focus()
+		m.apiInput.Blur()
+		m.modelInput.Blur()
+		m.grokInput.Blur()
+		m.vercelInput, cmd = m.vercelInput.Update(msg)
+		cmds = append(cmds, cmd)
+		val := m.vercelInput.Value()
+		if m.db != nil {
+			_ = m.db.SetSetting(context.Background(), "vercel_token", val)
+		}
+		_ = os.Setenv("VERCEL_TOKEN", val)
 	} else {
 		m.apiInput.Blur()
 		m.modelInput.Blur()
 		m.grokInput.Blur()
+		m.vercelInput.Blur()
 		// map "j" and "k" to navigate if not focused on text inputs
 		if msg.String() == "k" && m.settingsCursor > 0 {
 			m.settingsCursor--
-		} else if msg.String() == "j" && m.settingsCursor < len(ui.ThemeOrder)+2 {
+		} else if msg.String() == "j" && m.settingsCursor < len(ui.ThemeOrder)+3 {
 			m.settingsCursor++
 		}
 	}
@@ -2502,6 +2625,20 @@ func (m model) renderSettings() string {
 	}
 	sb.WriteString(fmt.Sprintf("%s%-10s %s\n\n", grokCursor, "Grok API:", m.grokInput.View()))
 
+	// ── Vercel ───────────────────────────────────────────────────────────
+	sb.WriteString(sectionStyle.Render("── Vercel Deployment") + "\n\n")
+	vercelCursor := "  "
+	if m.settingsCursor == 3 {
+		vercelCursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
+	}
+	vercelStatus := ""
+	if m.vercelInput.Value() != "" {
+		vercelStatus = " " + lipgloss.NewStyle().Foreground(t.Success).Render("✓ set")
+	}
+	sb.WriteString(fmt.Sprintf("%s%-10s %s%s\n", vercelCursor, "Token:", m.vercelInput.View(), vercelStatus))
+	sb.WriteString(fmt.Sprintf("  %-10s %s\n\n", "",
+		dimStyle.Render("Get token at vercel.com/account/tokens  ·  CLI installs via npx (no global install needed)")))
+
 	// ── Theme ────────────────────────────────────────────────────────────
 	sb.WriteString(sectionStyle.Render("── Theme") + "\n\n")
 	for i, name := range ui.ThemeOrder {
@@ -2510,7 +2647,7 @@ func (m model) renderSettings() string {
 		label := th.Name
 		dot := lipgloss.NewStyle().Foreground(th.Primary).Render("●")
 		isCurrent := name == m.themeName || (m.themeName == "" && name == "default")
-		if i+3 == m.settingsCursor {
+		if i+4 == m.settingsCursor {
 			cursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
 			label = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(label)
 		} else {
@@ -2617,6 +2754,132 @@ func (m model) renderSettings() string {
 	sb.WriteString(dimStyle.Render("  esc: back to dashboard"))
 
 	return borderStyle.Render(sb.String())
+}
+
+// ── Agent Prompt view ───────────────────────────────────────────────────
+
+func (m model) updateAgentPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		if m.agentPromptReplyCh != nil {
+			select {
+			case m.agentPromptReplyCh <- "":
+			default:
+			}
+		}
+		m.viewMode = ViewChat
+		m.viewDirty = true
+		return m, nil
+	case "enter":
+		var reply string
+		if m.agentPromptT == "confirm" {
+			v := strings.ToLower(strings.TrimSpace(m.agentPromptInput.Value()))
+			if v == "" || v == "y" || v == "yes" {
+				reply = "yes"
+			} else {
+				reply = "no"
+			}
+		} else {
+			reply = m.agentPromptInput.Value()
+		}
+		if m.agentPromptReplyCh != nil {
+			select {
+			case m.agentPromptReplyCh <- reply:
+			default:
+			}
+		}
+		m.viewMode = ViewChat
+		m.viewDirty = true
+		m.agentPromptInput.Reset()
+		return m, nil
+	case "y", "Y":
+		if m.agentPromptT == "confirm" {
+			if m.agentPromptReplyCh != nil {
+				select {
+				case m.agentPromptReplyCh <- "yes":
+				default:
+				}
+			}
+			m.viewMode = ViewChat
+			m.viewDirty = true
+			m.agentPromptInput.Reset()
+			return m, nil
+		}
+	case "n", "N":
+		if m.agentPromptT == "confirm" {
+			if m.agentPromptReplyCh != nil {
+				select {
+				case m.agentPromptReplyCh <- "no":
+				default:
+				}
+			}
+			m.viewMode = ViewChat
+			m.viewDirty = true
+			m.agentPromptInput.Reset()
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.agentPromptInput, cmd = m.agentPromptInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) renderAgentPrompt() string {
+	t := ui.GetTheme(m.themeName)
+	if m.themeName == "" {
+		t = ui.GetTheme("default")
+	}
+
+	boxW := m.width - 8
+	if boxW < 40 {
+		boxW = 40
+	}
+	if boxW > 90 {
+		boxW = 90
+	}
+
+	var inner strings.Builder
+
+	agentBadge := ui.AgentStyle(string(m.activeAgent)).Render(llm.AgentEmoji(m.activeAgent) + "  " + string(m.activeAgent) + " is asking")
+	inner.WriteString(agentBadge + "\n\n")
+
+	questionStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	inner.WriteString(questionStyle.Render(m.agentPromptQ) + "\n\n")
+
+	dimStyle := lipgloss.NewStyle().Foreground(t.Dim)
+
+	if m.agentPromptT == "confirm" {
+		yStyle := lipgloss.NewStyle().
+			Background(t.Success).
+			Foreground(lipgloss.Color("0")).
+			Bold(true).
+			Padding(0, 3)
+		nStyle := lipgloss.NewStyle().
+			Background(t.Danger).
+			Foreground(lipgloss.Color("0")).
+			Bold(true).
+			Padding(0, 3)
+		inner.WriteString(yStyle.Render("Y  Yes") + "   " + nStyle.Render("N  No") + "\n\n")
+		inner.WriteString(dimStyle.Render("Press Y or N  ·  Esc to cancel"))
+	} else {
+		inner.WriteString(m.agentPromptInput.View() + "\n\n")
+		inner.WriteString(dimStyle.Render("Enter to confirm  ·  Esc to cancel"))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Primary).
+		Padding(1, 3).
+		Width(boxW).
+		Render(inner.String())
+
+	topPad := (m.height - lipgloss.Height(box)) / 3
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	return strings.Repeat("\n", topPad) +
+		lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center).Render(box)
 }
 
 // ── MCP view ────────────────────────────────────────────────────────────

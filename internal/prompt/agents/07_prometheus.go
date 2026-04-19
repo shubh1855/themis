@@ -28,6 +28,8 @@ GIT TOOLS:
 {"tool":"git_push","remote":"origin","branch":"<branch>"} — push branch (has built-in retry)
 {"tool":"git_clone","url":"<url>","dir":"<optional>"} — clone repository
 {"tool":"git_create_pr","title":"<t>","body":"<b>","base":"main","head":"<branch>"} — create PR
+{"tool":"git_init","path":"<dir>"} — initialize new git repo + create initial commit in directory
+{"tool":"github_create_repo","name":"<repo-name>","private":false} — create GitHub repo, set origin remote, and push
 
 GITHUB AUTH TOOLS:
 {"tool":"github_status"} — check authentication status
@@ -57,6 +59,13 @@ i. git_commit             — commit with conventional message
 j. git_status             — verify clean working tree before push
 k. git_push               — push branch to remote
 l. git_create_pr          — open pull request
+
+NEW REPOSITORY WORKFLOW (starting a project from scratch):
+1. git_init <project-dir>        — init git repo + initial commit
+2. github_status                 — verify GitHub authentication
+3. github_login                  — if not authenticated
+4. github_create_repo <name>     — creates GitHub repo, sets origin remote, pushes all commits
+5. Confirm success and report repo URL back to user/Zeus
 
 COMMIT MESSAGE CONVENTIONS (mandatory):
 Format: <type>: <description>

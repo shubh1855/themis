@@ -16,7 +16,12 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/system"
 )
 
-func NewReactExecutor(rootDir string, mcpMgr *mcp.Manager) func(string, map[string]interface{}) (string, error) {
+// PromptFn is called when an agent needs user input during a task.
+// question is the text to show; inputType is "text" or "confirm".
+// It blocks until the user responds and returns the user's answer.
+type PromptFn func(question, inputType string) string
+
+func NewReactExecutor(rootDir string, mcpMgr *mcp.Manager, promptFn PromptFn) func(string, map[string]interface{}) (string, error) {
 	fm := files.NewManager(rootDir)
 	deps := NewDependencies(rootDir)
 	router := NewRouter(deps)
@@ -286,6 +291,118 @@ func NewReactExecutor(rootDir string, mcpMgr *mcp.Manager) func(string, map[stri
 			}
 			b, _ := json.MarshalIndent(resp.Data, "", "  ")
 			return string(b), nil
+
+		case "ask_user":
+			question := models.ArgString(args, "question")
+			if question == "" {
+				return "", fmt.Errorf("ask_user: missing 'question'")
+			}
+			inputType := models.ArgString(args, "type")
+			if inputType == "" {
+				inputType = "text"
+			}
+			if promptFn != nil {
+				return promptFn(question, inputType), nil
+			}
+			return "no prompt handler available", nil
+
+		case "git_init":
+			path := models.ArgString(args, "path")
+			if path == "" {
+				path = "."
+			}
+			cmd := fmt.Sprintf(`mkdir -p %q && git -C %q init && git -C %q add -A && git -C %q commit -m "chore: initial commit" --allow-empty`, path, path, path, path)
+			result, err := system.RunShellCmd(context.Background(), cmd, rootDir, 30*time.Second)
+			if err != nil {
+				return "", err
+			}
+			out := result.Stdout
+			if result.Stderr != "" {
+				out += "\nSTDERR:\n" + result.Stderr
+			}
+			return out, nil
+
+		case "github_create_repo":
+			name := models.ArgString(args, "name")
+			if name == "" {
+				return "", fmt.Errorf("github_create_repo: missing 'name'")
+			}
+			private := false
+			if v, ok := args["private"].(bool); ok {
+				private = v
+			}
+			visibility := "--public"
+			if private {
+				visibility = "--private"
+			}
+			cmd := fmt.Sprintf("gh repo create %q %s --source=. --remote=origin --push", name, visibility)
+			result, err := system.RunShellCmd(context.Background(), cmd, rootDir, 60*time.Second)
+			if err != nil {
+				return "", err
+			}
+			out := result.Stdout
+			if result.Stderr != "" {
+				out += "\nSTDERR:\n" + result.Stderr
+			}
+			return out, nil
+
+		case "vercel_deploy":
+			prod := false
+			if v, ok := args["prod"].(bool); ok {
+				prod = v
+			}
+			flags := "--yes"
+			if prod {
+				flags += " --prod"
+			}
+			result, err := system.RunShellCmd(context.Background(), "npx -y vercel@latest deploy "+flags, rootDir, 120*time.Second)
+			if err != nil {
+				return "", err
+			}
+			out := result.Stdout
+			if result.Stderr != "" {
+				out += "\nSTDERR:\n" + result.Stderr
+			}
+			return out, nil
+
+		case "vercel_list":
+			result, err := system.RunShellCmd(context.Background(), "npx -y vercel@latest list", rootDir, 30*time.Second)
+			if err != nil {
+				return "", err
+			}
+			out := result.Stdout
+			if result.Stderr != "" {
+				out += "\nSTDERR:\n" + result.Stderr
+			}
+			return out, nil
+
+		case "vercel_logs":
+			deployURL := models.ArgString(args, "url")
+			if deployURL == "" {
+				return "", fmt.Errorf("vercel_logs: missing 'url'")
+			}
+			result, err := system.RunShellCmd(context.Background(), "npx -y vercel@latest logs "+deployURL, rootDir, 30*time.Second)
+			if err != nil {
+				return "", err
+			}
+			out := result.Stdout
+			if result.Stderr != "" {
+				out += "\nSTDERR:\n" + result.Stderr
+			}
+			return out, nil
+
+		case "delegate", "delegate_task":
+			// This should be intercepted by the ReAct loop before reaching the executor.
+			// If it reaches here, it means the agent name or task was not resolved properly.
+			agent := models.ArgString(args, "agent")
+			task := models.ArgString(args, "task")
+			if task == "" {
+				task = models.ArgString(args, "content")
+			}
+			if agent == "" {
+				return "", fmt.Errorf("delegate: missing 'agent' field. Use: {\"tool\":\"delegate\",\"agent\":\"Hephaestus\",\"task\":\"...\"}")
+			}
+			return "", fmt.Errorf("delegate to %q failed: agent name not recognized or task missing. Valid agents: Athena, Hephaestus, Apollo, Hermes, Ares, Prometheus. You called with agent=%q task=%q", agent, agent, task)
 
 		default:
 			// Route MCP tools through the MCP manager.

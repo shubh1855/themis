@@ -92,6 +92,13 @@ var defaultServers = []ServerConfig{
 		Args:    []string{"-y", "@modelcontextprotocol/server-sqlite", "--db-path", "themis.db"},
 		Enabled: false,
 	},
+	{
+		Name:    "vercel",
+		Command: "npx",
+		Args:    []string{"-y", "@vercel/mcp"},
+		Env:     map[string]string{"VERCEL_TOKEN": ""},
+		Enabled: false, // enable by setting VERCEL_TOKEN env var
+	},
 }
 
 // Manager owns all MCP server connections.

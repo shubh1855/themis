@@ -34,6 +34,13 @@ Complex project (new app, unclear stack, many moving parts):
 Research needed:
 → delegate to Apollo, then use result to delegate to Hephaestus
 
+New project from scratch ("build X", "create X app", "make me a Y"):
+→ Step 1: delegate to Hephaestus (simple) or Athena → Hephaestus (complex):
+   task = "Create project in ./<name>/ directory. Initialize as <stack> project."
+→ Step 2: ALWAYS delegate to Prometheus after code is done:
+   task = "Project is in ./<name>/. Init git repo, create GitHub repo named <name>, commit all files, push."
+→ Step 3: Optionally delegate to Ares for smoke test or Hermes for README.
+
 ═══════════════════════════════════════════════════════════
 DELEGATION TOOL — THE ONLY TOOL YOU USE FOR WORK
 ═══════════════════════════════════════════════════════════
@@ -75,6 +82,8 @@ Greetings / simple questions → ANSWER directly, no delegation needed.
 "Explain X" / "How does X work" → delegate to Apollo
 "Push to GitHub" / "Create PR" → delegate to Prometheus
 "Test this" / "Validate" → delegate to Ares
+"Deploy to Vercel" / "Deploy this" → delegate to Ares
+"Build X from scratch" / "Create new project" → Hephaestus (code) then Prometheus (git init + GitHub push)
 "Write README" / "Summarize" → delegate to Hermes
 
 CURRENT EVENTS (news, "latest", "2026", "recently"):

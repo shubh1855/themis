@@ -66,6 +66,14 @@ type ReactErrorMsg struct {
 	Err   error
 }
 
+// AgentPromptMsg is sent by an agent that needs user input mid-task.
+// The agent goroutine blocks on ReplyCh until the TUI sends the response.
+type AgentPromptMsg struct {
+	Question  string
+	InputType string // "text" or "confirm"
+	ReplyCh   chan string
+}
+
 // TokenUpdateMsg carries live and final token counts for the status bar.
 type TokenUpdateMsg struct {
 	Agent        AgentID
@@ -120,13 +128,13 @@ func pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionM
 }
 
 var agentTools = map[AgentID][]string{
-	AgentZeus:       {"delegate", "read_file", "list_dir", "web_search", "fetch_url", "store_memory", "retrieve_memory"},
-	AgentAthena:     {"delegate", "read_file", "write_file", "create_file", "list_dir", "tree", "glob_search", "web_search", "fetch_url", "run_cmd", "store_memory", "retrieve_memory"},
-	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentAres:       {"delegate", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentPrometheus: {"delegate", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", "git_checkout_new_branch", "git_add", "git_commit", "git_push", "git_create_pr", "git_clone", "github_status", "github_login", "github_logout", "read_file", "list_dir", "run_cmd"},
+	AgentZeus:       {"delegate", "ask_user", "read_file", "list_dir", "web_search", "fetch_url", "store_memory", "retrieve_memory"},
+	AgentAthena:     {"delegate", "ask_user", "read_file", "write_file", "create_file", "list_dir", "tree", "glob_search", "web_search", "fetch_url", "run_cmd", "store_memory", "retrieve_memory"},
+	AgentHephaestus: {"delegate", "ask_user", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentApollo:     {"delegate", "ask_user", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentHermes:     {"delegate", "ask_user", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentAres:       {"delegate", "ask_user", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "vercel_deploy", "vercel_list", "vercel_logs", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentPrometheus: {"delegate", "ask_user", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", "git_checkout_new_branch", "git_add", "git_commit", "git_push", "git_create_pr", "git_clone", "git_init", "github_create_repo", "github_status", "github_login", "github_logout", "read_file", "list_dir", "run_cmd"},
 }
 
 var toolDescs = map[string]string{
@@ -166,6 +174,12 @@ var toolDescs = map[string]string{
 	"github_status":           `{"tool":"github_status"} — check auth status`,
 	"github_login":            `{"tool":"github_login"} — OAuth device login`,
 	"github_logout":           `{"tool":"github_logout"} — remove credentials`,
+	"ask_user":                `{"tool":"ask_user","question":"<question>","type":"text|confirm"} — pause and ask the user for input or confirmation`,
+	"git_init":                `{"tool":"git_init","path":"<dir>"} — init git repo + initial commit in directory (defaults to cwd)`,
+	"github_create_repo":      `{"tool":"github_create_repo","name":"<repo-name>","private":false} — create GitHub repo, set origin remote, push (requires gh CLI)`,
+	"vercel_deploy":           `{"tool":"vercel_deploy","prod":false} — deploy to Vercel (prod:true for production deployment)`,
+	"vercel_list":             `{"tool":"vercel_list"} — list all Vercel deployments`,
+	"vercel_logs":             `{"tool":"vercel_logs","url":"<deployment-url>"} — fetch logs for a Vercel deployment`,
 
 	"browser_click":           `{"tool":"browser_click","selector":"<css_selector>"} — clicks element`,
 	"browser_type":            `{"tool":"browser_type","selector":"<css_selector>","text":"<text>"} — types into input`,
@@ -560,12 +574,21 @@ func parseReact(text string) (thought string, action *parsedAction, answer strin
 					if task == "" {
 						task, _ = act.args["content"].(string)
 					}
+					// If LLM still omitted task field, use the accumulated thought as the task context
+					if task == "" {
+						task = strings.TrimSpace(thoughtBuf.String())
+					}
 					ctx, _ := act.args["context"].(string)
 					target := resolveAgentName(agentName)
-					if target != "" && task != "" {
+					// Trigger delegation if we have a valid agent target (task may be inferred from thought)
+					if target != "" {
+						if task == "" {
+							task = "Continue the current objective as delegated by Zeus."
+						}
 						deleg = &parsedDelegate{target: target, task: task, ctx: ctx}
 						return
 					}
+					// agentName was set but not resolved — fall through so we get a useful error
 				}
 				action = act
 			}

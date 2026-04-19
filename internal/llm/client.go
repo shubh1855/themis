@@ -394,7 +394,7 @@ func resolveAgentName(name string) AgentID {
 		return AgentAres
 	case "zeus", "Zeus":
 		return AgentZeus
-	case "prometheus":
+	case "prometheus", "Prometheus":
 		return AgentPrometheus
 	default:
 		return ""
