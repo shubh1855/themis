@@ -676,6 +676,43 @@ func (m model) startMCP() tea.Cmd {
 
 // ── Helpers (existing) ──────────────────────────────────────────────────
 
+func humanizeToolJSON(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") && strings.Contains(trimmed, "\"tool\"") {
+			var req tools.ToolRequest
+			if err := json.Unmarshal([]byte(trimmed), &req); err == nil && req.Tool != "" {
+				lines[i] = humanizeReq(req)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func humanizeReq(req tools.ToolRequest) string {
+	switch req.Tool {
+	case "run_file", "run_cmd":
+		return fmt.Sprintf("💻 **Executing terminal command:** \n```bash\n%s\n```", req.Content)
+	case "read_file":
+		return fmt.Sprintf("📄 **Reading file:** `%s`", req.Path)
+	case "write_file", "create_file":
+		return fmt.Sprintf("📝 **Writing to file:** `%s`", req.Path)
+	case "edit_file":
+		return fmt.Sprintf("📝 **Editing file:** `%s`", req.Path)
+	case "git_commit":
+		return fmt.Sprintf("📦 **Git Commit:** `%s`", req.Message)
+	case "git_push":
+		return "☁️ **Git Push**"
+	case "git_status":
+		return "🔍 **Checking Git Status**"
+	case "git_diff":
+		return "🔍 **Checking Git Diff**"
+	default:
+		return fmt.Sprintf("🔧 **Using Tool:** %s", req.Tool)
+	}
+}
+
 func extractToolRequests(text string) []tools.ToolRequest {
 	var reqs []tools.ToolRequest
 	for _, line := range strings.Split(text, "\n") {
@@ -717,7 +754,23 @@ func (m *model) renderContent() string {
 			out[i] = m.renderedCache[i]
 		} else {
 			// Cache miss (newly generated, updating terminal block, or resized bounds)
-			formatted := style.Render(raw)
+			var formatted string
+			if strings.HasPrefix(raw, "[PTY_BLOCK]") {
+				content := raw[len("[PTY_BLOCK]"):]
+				boxWidth := w - 4
+				if boxWidth < 10 {
+					boxWidth = 10
+				}
+				box := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("63")). // Blue/purple border
+					Padding(0, 1).
+					Width(boxWidth).
+					Render(content)
+				formatted = box
+			} else {
+				formatted = style.Render(raw)
+			}
 
 			if i < len(m.renderedCache) {
 				m.renderedCache[i] = formatted
@@ -904,7 +957,7 @@ func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	m.ptyCmd = cmd
 	m.ptyCleanup = cleanup
 	m.running = true
-	m.history = append(m.history, ui.WarnStyle.Render("► running")+"  (ctrl+d → EOF)\n")
+	m.history = append(m.history, "[PTY_BLOCK]"+ui.WarnStyle.Render("► running")+"  (ctrl+d → EOF)\n")
 	m.runOutputIdx = len(m.history) - 1
 	m.updateViewport()
 	return readCmd
@@ -1247,7 +1300,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeView()
 
 		if text != "" {
-			m.pushAgentOutput(msg.Agent, renderMarkdown(text))
+			humanizedText := humanizeToolJSON(text)
+			m.pushAgentOutput(msg.Agent, renderMarkdown(humanizedText))
 			// Persist assistant response and log token usage.
 			if m.db != nil && m.activeChatID != 0 {
 				_ = m.db.SaveMessage(context.Background(), m.activeChatID, "assistant", text)

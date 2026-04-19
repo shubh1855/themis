@@ -2,6 +2,7 @@ package qdrant
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -269,39 +270,87 @@ func (m *Manager) download() error {
 		return fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, url)
 	}
 
-	// Remove any old mock binary
 	_ = os.Remove(m.binPath)
 
-	gz, err := gzip.NewReader(resp.Body)
+	// Download to temp file
+	tmpFile, err := os.CreateTemp("", "qdrant-*")
 	if err != nil {
-		return fmt.Errorf("gzip: %w", err)
+		return fmt.Errorf("create temp download file: %w", err)
 	}
-	defer gz.Close()
+	tmpName := tmpFile.Name()
+	defer os.Remove(tmpName)
 
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("download body copy: %w", err)
+	}
+	tmpFile.Close()
+
+	if strings.HasSuffix(url, ".zip") {
+		zr, err := zip.OpenReader(tmpName)
 		if err != nil {
-			return fmt.Errorf("tar read: %w", err)
+			return fmt.Errorf("zip open: %w", err)
 		}
+		defer zr.Close()
+		for _, file := range zr.File {
+			base := filepath.Base(file.Name)
+			if base == "qdrant.exe" {
+				rc, err := file.Open()
+				if err != nil {
+					return fmt.Errorf("zip file open: %w", err)
+				}
+				f, err := os.OpenFile(m.binPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+				if err != nil {
+					rc.Close()
+					return fmt.Errorf("create binary: %w", err)
+				}
+				n, err := io.Copy(f, rc)
+				f.Close()
+				rc.Close()
+				if err != nil {
+					return fmt.Errorf("write binary: %w", err)
+				}
+				fmt.Printf("✓  Qdrant installed to %s (%d MB)\n", m.binPath, n/1_000_000)
+				return nil
+			}
+		}
+	} else {
+		f, err := os.Open(tmpName)
+		if err != nil {
+			return fmt.Errorf("reopen temp file: %w", err)
+		}
+		defer f.Close()
 
-		// Qdrant archives contain the binary at the root or in a subdirectory
-		base := filepath.Base(hdr.Name)
-		if (base == "qdrant" || base == "qdrant.exe") && hdr.Typeflag == tar.TypeReg {
-			f, err := os.OpenFile(m.binPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				return fmt.Errorf("create binary: %w", err)
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return fmt.Errorf("gzip: %w", err)
+		}
+		defer gz.Close()
+
+		tr := tar.NewReader(gz)
+		for {
+			hdr, err := tr.Next()
+			if err == io.EOF {
+				break
 			}
-			n, err := io.Copy(f, tr)
-			f.Close()
 			if err != nil {
-				return fmt.Errorf("write binary: %w", err)
+				return fmt.Errorf("tar read: %w", err)
 			}
-			fmt.Printf("✓  Qdrant installed to %s (%d MB)\n", m.binPath, n/1_000_000)
-			return nil
+
+			base := filepath.Base(hdr.Name)
+			if (base == "qdrant" || base == "qdrant.exe") && hdr.Typeflag == tar.TypeReg {
+				out, err := os.OpenFile(m.binPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+				if err != nil {
+					return fmt.Errorf("create binary: %w", err)
+				}
+				n, err := io.Copy(out, tr)
+				out.Close()
+				if err != nil {
+					return fmt.Errorf("write binary: %w", err)
+				}
+				fmt.Printf("✓  Qdrant installed to %s (%d MB)\n", m.binPath, n/1_000_000)
+				return nil
+			}
 		}
 	}
 

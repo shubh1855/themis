@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"os/exec"
+	"runtime"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -11,7 +12,21 @@ var recordCmd *exec.Cmd
 
 // StartRecording starts recording audio to the specified path using arecord.
 func StartRecording(path string) error {
-	recordCmd = exec.Command("arecord", "-f", "cd", "-t", "wav", path)
+	switch runtime.GOOS {
+	case "windows":
+		// Assumes ffmpeg is installed
+		// fallback that works generically (assumes default audio input device is available via dshow)
+		// Usually "audio=Microphone" works on en-US Windows, but using generic is safer.
+		// However ffmpeg requires the exact device name.
+		// Since Windows doesn't export a CLI audio recorder natively, ffmpeg is the standard fallback.
+		recordCmd = exec.Command("ffmpeg", "-y", "-f", "dshow", "-i", "audio=Microphone", "-t", "3600", path)
+	case "darwin":
+		// rec is standard with SoX on macOS
+		recordCmd = exec.Command("rec", "-q", "-c", "1", "-r", "16000", path)
+	default:
+		// arecord is standard ALSA on Linux
+		recordCmd = exec.Command("arecord", "-q", "-f", "cd", "-t", "wav", path)
+	}
 	return recordCmd.Start()
 }
 
