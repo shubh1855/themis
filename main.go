@@ -34,6 +34,7 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/syntax"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
 	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/audio"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/worker"
 )
@@ -232,6 +233,8 @@ type model struct {
 	themeName      string // name of current theme key (saved to DB)
 	apiInput       textinput.Model
 	modelInput     textinput.Model
+	grokInput      textinput.Model
+	isRecording    bool
 
 	// ── Usage stats (loaded when settings opens) ──
 	usageLogs     []dbx.UsageEntry
@@ -315,6 +318,7 @@ type dbReadyMsg struct {
 	items []dashItem
 	apiKey string
 	modelName string
+	grokKey string
 }
 
 func initDB() tea.Msg {
@@ -356,8 +360,13 @@ func initDB() tea.Msg {
 		modelName = dbModel
 	}
 
+	grokKey := ""
+	if dbGrok, ok, _ := db.GetSetting(ctx, "grok_key"); ok && dbGrok != "" {
+		grokKey = dbGrok
+	}
+
 	items := buildDashItems(db)
-	return dbReadyMsg{db: db, items: items, apiKey: apiKey, modelName: modelName}
+	return dbReadyMsg{db: db, items: items, apiKey: apiKey, modelName: modelName, grokKey: grokKey}
 }
 
 // ── Qdrant init message ─────────────────────────────────────────────────
@@ -371,6 +380,11 @@ type indexMsg struct {
 }
 
 type mcpReadyMsg struct{}
+
+type transcriptionMsg struct {
+	text string
+	err  error
+}
 
 type imagePickedMsg struct {
 	path string
@@ -587,6 +601,11 @@ func initialModel() model {
 	modIn.CharLimit = 100
 	modIn.Width = 40
 
+	grokIn := textinput.New()
+	grokIn.Placeholder = "grok api key for whisper"
+	grokIn.CharLimit = 200
+	grokIn.Width = 40
+
 	apiKey := os.Getenv("INFERX_API_KEY")
 	if apiKey == "" {
 		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
@@ -610,6 +629,7 @@ func initialModel() model {
 		dashInput:   dashTA,
 		apiInput:    apiIn,
 		modelInput:  modIn,
+		grokInput:   grokIn,
 		client:      llmClient,
 		registry:    tools.NewRegistry(fs),
 		perms:       tools.NewPermissionManager(),
@@ -1349,6 +1369,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// RE-SUBSCRIBE to the stream!
 		return m, llm.WaitReact(m.reactCh)
 
+		case transcriptionMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.pushOutput("STT Error: " + msg.err.Error())
+		} else if msg.text != "" {
+			cur := m.input.Value()
+			if cur != "" && !strings.HasSuffix(cur, " ") {
+				cur += " "
+			}
+			m.input.SetValue(cur + msg.text)
+			m.input.CursorEnd()
+		}
+		return m, nil
+
 	case imagePickedMsg:
 		if msg.path != "" {
 			m.pendingImages = append(m.pendingImages, msg.path)
@@ -1376,10 +1410,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Set cursor to current theme index.
 			for i, name := range ui.ThemeOrder {
 				if name == m.themeName {
-					m.settingsCursor = i + 2
+					m.settingsCursor = i + 3
 				}
 			}
 			return m, m.loadUsageData()
+				case "ctrl+r":
+			if m.viewMode == ViewChat {
+				if !m.isRecording {
+					if err := audio.StartRecording("/tmp/voice.wav"); err == nil {
+						m.isRecording = true
+					} else {
+						m.pushOutput("Audio Error: " + err.Error())
+					}
+					return m, nil
+				} else {
+					audio.StopRecording()
+					m.isRecording = false
+					m.loading = true
+					return m, func() tea.Msg {
+						t, e := audio.Transcribe(context.Background(), m.grokInput.Value(), "/tmp/voice.wav")
+						return transcriptionMsg{text: t, err: e}
+					}
+				}
+			}
 		case "ctrl+o":
 			return m, pickImageFile()
 		case "ctrl+v":
@@ -2018,6 +2071,14 @@ func (m model) renderChat() string {
 		footer = m.reviewFooter()
 	} else {
 		inputView := m.input.View()
+		if m.isRecording {
+			pulse := "●"
+			if time.Now().UnixMilli()%1000 < 500 {
+				pulse = "○"
+			}
+			recStr := lipgloss.NewStyle().Foreground(brandDanger).Bold(true).Render(pulse + " RECORDING AUDIO... [ |||||||||||||||||| ] (press ctrl+r to stop and transcribe)")
+			inputView = recStr + "\n" + inputView
+		}
 		if len(m.pendingImages) > 0 {
 			inputView += fmt.Sprintf("\n  📎 %d image(s) attached (ctrl+o to add more)", len(m.pendingImages))
 		}
@@ -2198,6 +2259,7 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewMode = ViewDashboard
 		m.apiInput.Blur()
 		m.modelInput.Blur()
+		m.grokInput.Blur()
 		return m, nil
 	}
 	
@@ -2207,12 +2269,12 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.settingsCursor--
 		}
 	case "down", "tab":
-		if m.settingsCursor < len(ui.ThemeOrder)+1 {
+		if m.settingsCursor < len(ui.ThemeOrder)+2 {
 			m.settingsCursor++
 		}
 	case "enter", " ":
-		if m.settingsCursor >= 2 {
-			themeIdx := m.settingsCursor - 2
+		if m.settingsCursor >= 3 {
+			themeIdx := m.settingsCursor - 3
 			if themeIdx < len(ui.ThemeOrder) {
 				name := ui.ThemeOrder[themeIdx]
 				m.themeName = name
@@ -2243,13 +2305,23 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.db.SetSetting(context.Background(), "llm_model", m.modelInput.Value())
 		}
 		llm.CurrentModel = m.modelInput.Value()
+	} else if m.settingsCursor == 2 {
+		m.grokInput.Focus()
+		m.apiInput.Blur()
+		m.modelInput.Blur()
+		m.grokInput, cmd = m.grokInput.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.db != nil {
+			_ = m.db.SetSetting(context.Background(), "grok_key", m.grokInput.Value())
+		}
 	} else {
 		m.apiInput.Blur()
 		m.modelInput.Blur()
+		m.grokInput.Blur()
 		// map "j" and "k" to navigate if not focused on text inputs
 		if msg.String() == "k" && m.settingsCursor > 0 {
 			m.settingsCursor--
-		} else if msg.String() == "j" && m.settingsCursor < len(ui.ThemeOrder)+1 {
+		} else if msg.String() == "j" && m.settingsCursor < len(ui.ThemeOrder)+2 {
 			m.settingsCursor++
 		}
 	}
@@ -2298,6 +2370,14 @@ func (m model) renderSettings() string {
 	
 	sb.WriteString(fmt.Sprintf("  %-10s %s\n\n", "Proxy:", dimStyle.Render("https://litellm-proxy-93ef.onrender.com/v1")))
 
+	// ── Grok / STT ───────────────────────────────────────────────────────
+	sb.WriteString(sectionStyle.Render("── Whisper STT") + "\n\n")
+	grokCursor := "  "
+	if m.settingsCursor == 2 {
+		grokCursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
+	}
+	sb.WriteString(fmt.Sprintf("%s%-10s %s\n\n", grokCursor, "Grok API:", m.grokInput.View()))
+
 	// ── Theme ────────────────────────────────────────────────────────────
 	sb.WriteString(sectionStyle.Render("── Theme") + "\n\n")
 	for i, name := range ui.ThemeOrder {
@@ -2306,7 +2386,7 @@ func (m model) renderSettings() string {
 		label := th.Name
 		dot := lipgloss.NewStyle().Foreground(th.Primary).Render("●")
 		isCurrent := name == m.themeName || (m.themeName == "" && name == "default")
-		if i+2 == m.settingsCursor {
+		if i+3 == m.settingsCursor {
 			cursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
 			label = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(label)
 		} else {

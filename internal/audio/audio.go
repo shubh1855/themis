@@ -2,7 +2,6 @@ package audio
 
 import (
 	"context"
-	"fmt"
 	"os/exec"
 
 	openai "github.com/sashabaranov/go-openai"
