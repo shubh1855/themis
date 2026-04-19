@@ -217,12 +217,12 @@ func (g *TaskGraph) Render(width, height int) string {
 
 	if g.Root == nil {
 		return panelBorder.Copy().Width(width - 2).Height(height - 2).Render(
-			panelTitle.Render("📋 Tasks") + "\n\n" +
+			panelTitle.Render("≡ Tasks") + "\n\n" +
 				lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("No active tasks"))
 	}
 
 	var sb strings.Builder
-	sb.WriteString(panelTitle.Render("📋 Task Graph") + "\n")
+	sb.WriteString(panelTitle.Render("≡ Task Graph") + "\n")
 
 	total, done, failed, running := 0, 0, 0, 0
 	for _, n := range g.nodes {
@@ -267,13 +267,13 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 		connector = prefix + "├─"
 	}
 
-	agentEmoji := map[string]string{
-		"Zeus": "⚡", "Athena": "🦉", "Hephaestus": "🔨",
-		"Apollo": "☀️", "Hermes": "🪽", "Ares": "⚔️",
+	agentShapes := map[string]string{
+		"Zeus": "◆", "Athena": "◈", "Hephaestus": "▪",
+		"Apollo": "●", "Hermes": "►", "Ares": "⨯",
 	}
-	emoji := agentEmoji[node.Agent]
-	if emoji == "" {
-		emoji = "●"
+	shape := agentShapes[node.Agent]
+	if shape == "" {
+		shape = "○"
 	}
 
 	icon := node.Status.Icon()
@@ -288,7 +288,7 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 		label = label[:usable-1] + "…"
 	}
 
-	line := connectorStyle.Render(connector) + stl.Render(icon+" ") + emoji + " " + stl.Render(label)
+	line := connectorStyle.Render(connector) + stl.Render(icon+" ") + shape + " " + stl.Render(label)
 	sb.WriteString(line + "\n")
 	remaining := maxLines - 1
 
@@ -315,7 +315,7 @@ func (g *TaskGraph) renderNode(sb *strings.Builder, node *TaskNode, prefix strin
 		if len(tcLabel) > usable-2 {
 			tcLabel = tcLabel[:usable-3] + "…"
 		}
-		sb.WriteString(connectorStyle.Render(childPrefix+"  ") + toolCallStyle.Render("⚙ "+tcLabel) + "\n")
+		sb.WriteString(connectorStyle.Render(childPrefix+"  ") + toolCallStyle.Render("› "+tcLabel) + "\n")
 		remaining--
 	}
 

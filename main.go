@@ -489,7 +489,11 @@ func initialModel() model {
 	dashTA.SetHeight(1)
 	dashTA.ShowLineNumbers = false
 
-	llmClient := llm.NewClient(os.Getenv("INFERX_API_KEY"))
+	apiKey := os.Getenv("INFERX_API_KEY")
+	if apiKey == "" {
+		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
+	}
+	llmClient := llm.NewClient(apiKey)
 	mcpMgr := mcp.NewManager()
 
 	return model{
@@ -673,7 +677,7 @@ func (m *model) startPTY(cmd *exec.Cmd, cleanup func()) tea.Cmd {
 	m.ptyCmd = cmd
 	m.ptyCleanup = cleanup
 	m.running = true
-	m.history = append(m.history, ui.WarnStyle.Render("▶ running")+"  (ctrl+d → EOF)\n")
+	m.history = append(m.history, ui.WarnStyle.Render("► running")+"  (ctrl+d → EOF)\n")
 	m.runOutputIdx = len(m.history) - 1
 	m.updateViewport()
 	return readCmd
@@ -705,46 +709,35 @@ func (m *model) drainQueue() tea.Cmd {
 
 		// Emit inline diff for file-write operations
 		switch req.Tool {
-		case "write_file", "create_file":
-			newContent := req.Content
-			diffStr := syntax.DiffView(oldContent, newContent, req.Path)
-			if diffStr != "" {
-				header := lipgloss.NewStyle().
-					Foreground(lipgloss.Color("205")).Bold(true).
-					Render("📄 "+req.Path) +
-					"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).
-					Render("("+req.Tool+")")
-				box := lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("238")).
-					PaddingLeft(1).
-					Render(header + "\n" + diffStr)
-				m.pushOutput(box)
-			} else if res.Output != "" {
-				m.pushOutput("[tool] " + res.Output)
-			}
+		case "create_file":
+			diffStr := syntax.DiffView(oldContent, req.Content, req.Path)
+			header := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true).Render("▪ "+req.Path) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("(create_file)")
+			box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("2")).PaddingLeft(1).PaddingRight(1).Render(header + "\n" + diffStr)
+			m.pushOutput(box)
+		case "write_file":
+			diffStr := syntax.DiffView(oldContent, req.Content, req.Path)
+			header := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render("▪ "+req.Path) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("(write_file)")
+			box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("205")).PaddingLeft(1).PaddingRight(1).Render(header + "\n" + diffStr)
+			m.pushOutput(box)
 		case "edit_file":
-			// For edit_file, compute diff between old and edited result
 			newContent, _ := m.registry.FS.ReadFile(req.Path)
 			diffStr := syntax.DiffView(oldContent, newContent, req.Path)
-			if diffStr != "" {
-				header := lipgloss.NewStyle().
-					Foreground(lipgloss.Color("214")).Bold(true).
-					Render("✏ "+req.Path) +
-					"  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).
-					Render("(edit_file)")
-				box := lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("238")).
-					PaddingLeft(1).
-					Render(header + "\n" + diffStr)
-				m.pushOutput(box)
-			} else if res.Output != "" {
-				m.pushOutput("[tool] " + res.Output)
-			}
+			header := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render("✎ "+req.Path) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("(edit_file)")
+			box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("214")).PaddingLeft(1).PaddingRight(1).Render(header + "\n" + diffStr)
+			m.pushOutput(box)
+		case "delete_file":
+			header := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true).Render("⨯ "+req.Path) + "  " + lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("(delete_file)")
+			box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("1")).PaddingLeft(1).PaddingRight(1).Render(header)
+			m.pushOutput(box)
 		default:
 			if res.Output != "" {
-				m.pushOutput("[tool] " + res.Output)
+				header := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true).Render("› " + req.Tool)
+				box := lipgloss.NewStyle().
+					Border(lipgloss.NormalBorder()).
+					BorderForeground(lipgloss.Color("240")).
+					Padding(0, 1).
+					Render(header + "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render(res.Output))
+				m.pushOutput(box)
 			}
 		}
 	}
@@ -871,10 +864,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.running = false
 		if m.runOutputIdx < len(m.history) {
-			m.history[m.runOutputIdx] += ui.StatusStyle.Render("\n▶ done")
+			m.history[m.runOutputIdx] += ui.StatusStyle.Render("\n► done")
 			m.updateViewport()
 		}
-		return m, m.drainQueue()
+		
+		cmd := m.drainQueue()
+		if cmd != nil {
+			return m, cmd
+		}
+
+		// Queue is empty. If a sub-agent was executing this queue and its react loop is done, return to Zeus.
+		if m.reactCh == nil && m.activeAgent != llm.AgentZeus && m.activeAgent != "" {
+			m.activeAgent = llm.AgentZeus
+			m.loading = true
+			
+			prompt := fmt.Sprintf("Sub-agent has finished its PTY tool execution. Analyze the outcome, call complete_step for your current task, and either delegate the next step or provide a final ANSWER to the user.")
+			
+			if m.taskGraph != nil && m.taskGraph.Root != nil {
+				m.activeTaskID = m.taskGraph.Root.ID
+			}
+
+			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
+			m.reactCh = ch
+			return m, tea.Batch(reactCmd, m.spinner.Tick)
+		}
+
+		return m, nil
 
 	case llm.ThinkChunkMsg:
 		if m.thinkIdx < 0 {
@@ -887,7 +902,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case llm.ToolCallMsg:
 		m.endThinkBlock()
 		badge := ui.AgentStyle(string(msg.Agent)).Render(llm.AgentEmoji(msg.Agent))
-		m.pushOutput(badge + " " + ui.ToolExecStyle.Render("🔧 "+msg.Tool) +
+		m.pushOutput(badge + " " + ui.ToolExecStyle.Render("◈ "+msg.Tool) +
 			"  " + ui.StatusStyle.Render(truncate(msg.Display, 80)))
 		if tid := m.activeTaskID; tid != "" {
 			m.taskGraph.AddToolCall(tid, msg.Tool+": "+truncate(msg.Display, 40))
@@ -963,11 +978,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resizeView()
 
-		if reqs := extractToolRequests(text); len(reqs) > 0 {
-			m.pushAgentOutput(msg.Agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
-			m.pendingQueue = reqs
-			return m, m.drainQueue()
-		}
 		if text != "" {
 			rendered := text
 			if syntax.HasMath(text) {
@@ -981,6 +991,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.db != nil && (m.sessionIn > 0 || m.sessionOut > 0) {
 				_ = m.db.LogUsage(context.Background(), string(msg.Agent), m.curInputTokens, m.curOutputTokens)
 			}
+		}
+
+		if reqs := extractToolRequests(text); len(reqs) > 0 {
+			m.pushAgentOutput(msg.Agent, fmt.Sprintf("executing %d tool(s)...", len(reqs)))
+			m.pendingQueue = reqs
+			cmd := m.drainQueue()
+			// If executing a tool natively returns a tea.Cmd (like running PTY), dispatch it.
+			// But for sub-agents, we must ensure Zeus kicks back in AFTER the PTY queue finishes.
+			// m.drainQueue doesn't inherently loop back to LLM if it's not a tool call msg.
+			// To fix this gracefully without breaking PTY loops, we process the queue,
+			// and then immediately drop down to the Zeus orchestration handoff below.
+			if cmd != nil {
+				return m, cmd // Wait, if it's PTY, returning cmd means we pause. 
+				// We actually need a way to resume Zeus after PTY finishes (in apptty.DoneMsg).
+			}
+		}
+
+		// ORCHESTRATION LOOP FIX:
+		// If the worker was a sub-agent (not Zeus), control MUST return to Zeus to continue the master plan!
+		if msg.Agent != llm.AgentZeus {
+			m.activeAgent = llm.AgentZeus
+			m.loading = true
+			
+			prompt := fmt.Sprintf("Sub-agent %s has finished its delegated execution. Analyze the outcome, call complete_step for your current task, and either delegate the next step or provide a final ANSWER to the user.", msg.Agent)
+			
+			if m.taskGraph != nil && m.taskGraph.Root != nil {
+				m.activeTaskID = m.taskGraph.Root.ID
+			}
+
+			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
+			m.reactCh = ch
+			return m, tea.Batch(reactCmd, m.spinner.Tick)
 		}
 
 	case llm.ReactDoneMsg:
@@ -1024,7 +1066,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Foreground(brandDanger).
 			Bold(true).
 			Padding(0, 2).
-			Render("⚠  " + string(msg.Agent) + " Error\n\n" + msg.Err.Error())
+			Render("!  " + string(msg.Agent) + " Error\n\n" + msg.Err.Error())
 		m.pushOutput(errBox)
 
 	case chatHistoryMsg:
@@ -1037,7 +1079,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "user":
 				m.pushOutput("You > " + hm.Content)
 			case "assistant":
-				badge := themisStyle.Render("🤖 Themis")
+				badge := themisStyle.Render("● Themis")
 				m.pushOutput(badge + " › " + ui.AnswerStyle.Render(hm.Content))
 			}
 		}
@@ -1060,12 +1102,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessionIn += msg.InputTokens
 			m.sessionOut += msg.OutputTokens
 		}
-		return m, nil
+		// RE-SUBSCRIBE to the stream!
+		return m, llm.WaitReact(m.reactCh)
 
 	case imagePickedMsg:
 		if msg.path != "" {
 			m.pendingImages = append(m.pendingImages, msg.path)
-			m.pushOutput(fmt.Sprintf("📎 Image attached: %s", filepath.Base(msg.path)))
+			m.pushOutput(fmt.Sprintf("+ Image attached: %s", filepath.Base(msg.path)))
 		}
 		return m, nil
 
@@ -1373,7 +1416,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.activeProjectPath = item.path
 				m.viewMode = ViewChat
 				m.input.Focus()
-				m.pushOutput(dashSubtitle.Render("📂 Opened project: " + item.label))
+				m.pushOutput(dashSubtitle.Render("▪ Opened project: " + item.label))
 				return m, m.indexProject()
 			case "chat":
 				if m.db != nil {
@@ -1383,7 +1426,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.activeProjectID = item.projectID
 				m.viewMode = ViewChat
 				m.input.Focus()
-				m.pushOutput(dashSubtitle.Render("💬 Resumed chat: " + item.label))
+				m.pushOutput(dashSubtitle.Render("· Resumed chat: " + item.label))
 				return m, m.loadChatHistory(item.id)
 			case "action":
 				if strings.Contains(item.label, "New Project") {
@@ -1398,7 +1441,7 @@ func (m model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					m.viewMode = ViewChat
 					m.input.Focus()
-					m.pushOutput(dashSubtitle.Render("💬 New chat session started"))
+					m.pushOutput(dashSubtitle.Render("· New chat session started"))
 				} else if strings.Contains(item.label, "MCP") {
 					m.viewMode = ViewMCP
 				}

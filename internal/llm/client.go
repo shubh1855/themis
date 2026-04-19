@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	openai "github.com/sashabaranov/go-openai"
@@ -52,7 +53,7 @@ func AgentEmoji(id AgentID) string {
 	case AgentAres:
 		return ""
 	case AgentPrometheus:
-		return "🔥"
+		return "▲"
 	default:
 		return ""
 	}
@@ -106,8 +107,11 @@ func callAgent(client *openai.Client, agent AgentID, userPrompt string, extraCon
 		Content: userPrompt,
 	})
 
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	resp, err := client.CreateChatCompletion(
-		context.Background(),
+		ctx,
 		openai.ChatCompletionRequest{
 			Model:    "google/gemma-4-31B-it",
 			Messages: messages,
@@ -178,7 +182,10 @@ func AskAgent(client *openai.Client, agent AgentID, task string, zeusContext str
 
 		history = append(history, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: task})
 
-		resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 			Model:    "google/gemma-4-31B-it",
 			Messages: history,
 		})
@@ -289,7 +296,10 @@ func AskAgentWithResults(client *openai.Client, agent AgentID, results []string,
 
 		history = append(history, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: prompt})
 
-		resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 			Model:    "google/gemma-4-31B-it",
 			Messages: history,
 		})

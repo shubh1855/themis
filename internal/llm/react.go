@@ -183,9 +183,11 @@ func reactSuffix(agent AgentID, mcpToolDescs string) string {
 	sb.WriteString("When done: THOUGHT: <final reasoning>\nANSWER: <complete response>\n\n")
 	sb.WriteString("RULES:\n")
 	sb.WriteString("- For greetings, simple questions, or single-step tasks: skip ACTION, go straight to ANSWER\n")
-	sb.WriteString("- For multi-step tasks (3+ steps): call task_plan first with all planned steps\n")
+	sb.WriteString("- CRITICAL UI RULE: The terminal shows a Task Graph to the user. You MUST respect it!\n")
+	sb.WriteString("- If your work requires 2+ actions, ALWAYS call `task_plan` FIRST with all planned steps.\n")
+	sb.WriteString("- You MUST call `complete_step` the exact moment a step from your `task_plan` is finished.\n")
+	sb.WriteString("- If you fail to call `complete_step`, the user's UI will freeze on 'pending' forever.\n")
 	sb.WriteString("- One ACTION per turn, then wait for OBSERVATION\n")
-	sb.WriteString("- Call complete_step each time a step is finished\n")
 	sb.WriteString("- ACTION must be valid JSON on one line\n\n")
 	sb.WriteString("YOUR AVAILABLE TOOLS:\n")
 	// Always include task management tools.
