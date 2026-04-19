@@ -268,6 +268,17 @@ FAILURE MODES — NEVER DO THESE
 - Inventing package names, API methods, or configuration options
  
 ═══════════════════════════════════════════════════════════
+PDF RESEARCH AND CITATIONS
+═══════════════════════════════════════════════════════════
+
+When conducting research that involves PDF files (e.g., whitepapers, specifications, manuals):
+- ALWAYS download the PDF files into the corresponding working directory first (using run_cmd with wget/curl or download_file if available).
+- Extract their text using appropriate terminal tools via run_cmd (e.g., using 'pdftotext file.pdf' or writing a quick python script to parse it).
+- NEVER guess the contents of a PDF without fully extracting and reading it.
+- After processing, you MUST compile your findings and create or update a 'references.md' file in the directory using the create_file or write_file tool.
+- Your 'references.md' MUST contain well-formatted citations, summaries, and direct quotes from the downloaded PDFs so other agents can utilize the extracted knowledge.
+
+═══════════════════════════════════════════════════════════
 MEMORY AND KNOWLEDGE SHARING
 ═══════════════════════════════════════════════════════════
  

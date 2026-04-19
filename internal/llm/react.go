@@ -123,7 +123,7 @@ var agentTools = map[AgentID][]string{
 	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "store_memory", "retrieve_memory", "browser_view", "browser_run_js", "browser_close"},
 	AgentAthena:     {"delegate"},
 	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
-	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_run_js", "browser_close"},
+	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_run_js", "browser_close"},
 	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
 	AgentAres:       {"delegate", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
 	AgentPrometheus: {"delegate", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", "git_checkout_new_branch", "git_add", "git_commit", "git_push", "git_create_pr", "git_clone", "github_status", "github_login", "github_logout", "read_file", "list_dir", "run_cmd"},

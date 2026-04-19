@@ -690,6 +690,59 @@ func humanizeToolJSON(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+func humanizeAction(tool string, args map[string]interface{}) string {
+	if strings.HasPrefix(tool, "mcp__filesystem__") {
+		act := strings.TrimPrefix(tool, "mcp__filesystem__")
+		switch act {
+		case "write_file":
+			return fmt.Sprintf("📝 **MCP Writing file:** `%v`", args["path"])
+		case "read_file":
+			return fmt.Sprintf("📄 **MCP Reading file:** `%v`", args["path"])
+		case "list_directory":
+			return fmt.Sprintf("📂 **MCP Listing directory:** `%v`", args["path"])
+		case "search_files":
+			return fmt.Sprintf("🔍 **MCP Searching files:** `%v`", args["pattern"])
+		case "get_file_info":
+			return fmt.Sprintf("ℹ️ **MCP File info:** `%v`", args["path"])
+		}
+	}
+	switch tool {
+	case "run_file", "run_cmd":
+		var cmd string
+		if c, ok := args["command"].(string); ok {
+			cmd = c
+		} else if c, ok := args["content"].(string); ok {
+			cmd = c
+		} else {
+			cmd = fmt.Sprintf("%v", args)
+		}
+		return fmt.Sprintf("💻 **Executing terminal command:** \n```bash\n%s\n```", cmd)
+	case "read_file":
+		return fmt.Sprintf("📄 **Reading file:** `%v`", args["path"])
+	case "write_file", "create_file":
+		return fmt.Sprintf("📝 **Writing to file:** `%v`", args["path"])
+	case "edit_file":
+		return fmt.Sprintf("📝 **Editing file:** `%v`", args["path"])
+	case "git_commit":
+		return fmt.Sprintf("📦 **Git Commit:** `%v`", args["message"])
+	case "git_push":
+		return "☁️ **Git Push**"
+	case "git_status":
+		return "🔍 **Checking Git Status**"
+	case "git_diff":
+		return "🔍 **Checking Git Diff**"
+	case "task_plan":
+		return "📋 **Constructing Task Plan**"
+	case "complete_step":
+		return fmt.Sprintf("✅ **Completed step:** `%v`", args["step"])
+	case "web_search":
+		return fmt.Sprintf("🌐 **Searching Web:** `%v`", args["query"])
+	case "fetch_url":
+		return fmt.Sprintf("📥 **Fetching URL:** `%v`", args["url"])
+	}
+	return fmt.Sprintf("🔧 **Using Tool:** %s", tool)
+}
+
 func humanizeReq(req tools.ToolRequest) string {
 	switch req.Tool {
 	case "run_file", "run_cmd":
@@ -1223,8 +1276,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case llm.ToolCallMsg:
 		m.endThinkBlock()
 		badge := ui.AgentStyle(string(msg.Agent)).Render(llm.AgentEmoji(msg.Agent))
-		m.pushOutput(badge + " " + ui.ToolExecStyle.Render("◈ "+msg.Tool) +
-			"  " + ui.StatusStyle.Render(truncate(msg.Display, 80)))
+		actionStr := humanizeAction(msg.Tool, msg.Args)
+		parsedMsg := badge + " " + renderMarkdown(actionStr)
+		m.pushOutput(parsedMsg)
 		if tid := m.activeTaskID; tid != "" {
 			m.taskGraph.AddToolCall(tid, msg.Tool+": "+truncate(msg.Display, 40))
 		}
