@@ -28,6 +28,10 @@ const (
 
 const reactModel = "google/gemma-4-31B-it"
 
+var CurrentModel = reactModel
+var CurrentAPIKey = ""
+
+
 var agentPrompts = map[AgentID]string{
 	AgentZeus:       agents.ZeusPrompt,
 	AgentAthena:     agents.AthenaPrompt,
@@ -62,6 +66,7 @@ func AgentEmoji(id AgentID) string {
 func NewClient(apiKey string) *openai.Client {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = "https://litellm-proxy-93ef.onrender.com/v1"
+	CurrentAPIKey = apiKey
 	return openai.NewClientWithConfig(cfg)
 }
 
@@ -113,7 +118,7 @@ func callAgent(client *openai.Client, agent AgentID, userPrompt string, extraCon
 	resp, err := client.CreateChatCompletion(
 		ctx,
 		openai.ChatCompletionRequest{
-			Model:    "google/gemma-4-31B-it",
+			Model:    CurrentModel,
 			Messages: messages,
 		},
 	)
@@ -186,7 +191,7 @@ func AskAgent(client *openai.Client, agent AgentID, task string, zeusContext str
 		defer cancel()
 
 		resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:    "google/gemma-4-31B-it",
+			Model:    CurrentModel,
 			Messages: history,
 		})
 		if err != nil {
@@ -300,7 +305,7 @@ func AskAgentWithResults(client *openai.Client, agent AgentID, results []string,
 		defer cancel()
 
 		resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-			Model:    "google/gemma-4-31B-it",
+			Model:    CurrentModel,
 			Messages: history,
 		})
 		if err != nil {

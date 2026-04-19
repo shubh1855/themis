@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -229,6 +230,8 @@ type model struct {
 	// ── Settings ──
 	settingsCursor int    // cursor in settings view (theme row index)
 	themeName      string // name of current theme key (saved to DB)
+	apiInput       textinput.Model
+	modelInput     textinput.Model
 
 	// ── Usage stats (loaded when settings opens) ──
 	usageLogs     []dbx.UsageEntry
@@ -310,6 +313,8 @@ type dbReadyMsg struct {
 	db    *dbx.DB
 	err   error
 	items []dashItem
+	apiKey string
+	modelName string
 }
 
 func initDB() tea.Msg {
@@ -337,9 +342,22 @@ func initDB() tea.Msg {
 	if themeName, ok, _ := db.GetSetting(ctx, "theme"); ok && themeName != "" {
 		applyTheme(ui.GetTheme(themeName))
 	}
+	
+	apiKey := os.Getenv("INFERX_API_KEY")
+	if apiKey == "" {
+		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
+	}
+	if dbAPI, ok, _ := db.GetSetting(ctx, "api_key"); ok && dbAPI != "" {
+		apiKey = dbAPI
+	}
+
+	modelName := "google/gemma-4-31B-it"
+	if dbModel, ok, _ := db.GetSetting(ctx, "llm_model"); ok && dbModel != "" {
+		modelName = dbModel
+	}
 
 	items := buildDashItems(db)
-	return dbReadyMsg{db: db, items: items}
+	return dbReadyMsg{db: db, items: items, apiKey: apiKey, modelName: modelName}
 }
 
 // ── Qdrant init message ─────────────────────────────────────────────────
@@ -559,6 +577,16 @@ func initialModel() model {
 	dashTA.SetHeight(1)
 	dashTA.ShowLineNumbers = false
 
+	apiIn := textinput.New()
+	apiIn.Placeholder = "sk-..."
+	apiIn.CharLimit = 200
+	apiIn.Width = 40
+
+	modIn := textinput.New()
+	modIn.Placeholder = "google/gemma-4-31B-it"
+	modIn.CharLimit = 100
+	modIn.Width = 40
+
 	apiKey := os.Getenv("INFERX_API_KEY")
 	if apiKey == "" {
 		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
@@ -580,6 +608,8 @@ func initialModel() model {
 		},
 		dashCursor:  0,
 		dashInput:   dashTA,
+		apiInput:    apiIn,
+		modelInput:  modIn,
 		client:      llmClient,
 		registry:    tools.NewRegistry(fs),
 		perms:       tools.NewPermissionManager(),
@@ -1346,7 +1376,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Set cursor to current theme index.
 			for i, name := range ui.ThemeOrder {
 				if name == m.themeName {
-					m.settingsCursor = i
+					m.settingsCursor = i + 2
 				}
 			}
 			return m, m.loadUsageData()
@@ -2161,29 +2191,70 @@ func renderMarkdown(content string) string {
 // ── Settings view ───────────────────────────────────────────────────────
 
 func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "ctrl+s":
+	var cmd tea.Cmd
+	var cmds []tea.Cmd
+
+	if msg.String() == "esc" || msg.String() == "ctrl+s" {
 		m.viewMode = ViewDashboard
-	case "up", "k":
+		m.apiInput.Blur()
+		m.modelInput.Blur()
+		return m, nil
+	}
+	
+	switch msg.String() {
+	case "up", "shift+tab":
 		if m.settingsCursor > 0 {
 			m.settingsCursor--
 		}
-	case "down", "j":
-		if m.settingsCursor < len(ui.ThemeOrder)-1 {
+	case "down", "tab":
+		if m.settingsCursor < len(ui.ThemeOrder)+1 {
 			m.settingsCursor++
 		}
 	case "enter", " ":
-		// Apply selected theme.
-		if m.settingsCursor < len(ui.ThemeOrder) {
-			name := ui.ThemeOrder[m.settingsCursor]
-			m.themeName = name
-			applyTheme(ui.GetTheme(name))
-			if m.db != nil {
-				_ = m.db.SetSetting(context.Background(), "theme", name)
+		if m.settingsCursor >= 2 {
+			themeIdx := m.settingsCursor - 2
+			if themeIdx < len(ui.ThemeOrder) {
+				name := ui.ThemeOrder[themeIdx]
+				m.themeName = name
+				applyTheme(ui.GetTheme(name))
+				if m.db != nil {
+					_ = m.db.SetSetting(context.Background(), "theme", name)
+				}
 			}
 		}
 	}
-	return m, nil
+
+	if m.settingsCursor == 0 {
+		m.apiInput.Focus()
+		m.modelInput.Blur()
+		m.apiInput, cmd = m.apiInput.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.db != nil {
+			_ = m.db.SetSetting(context.Background(), "api_key", m.apiInput.Value())
+		}
+		llm.CurrentAPIKey = m.apiInput.Value()
+		m.client = llm.NewClient(m.apiInput.Value())
+	} else if m.settingsCursor == 1 {
+		m.modelInput.Focus()
+		m.apiInput.Blur()
+		m.modelInput, cmd = m.modelInput.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.db != nil {
+			_ = m.db.SetSetting(context.Background(), "llm_model", m.modelInput.Value())
+		}
+		llm.CurrentModel = m.modelInput.Value()
+	} else {
+		m.apiInput.Blur()
+		m.modelInput.Blur()
+		// map "j" and "k" to navigate if not focused on text inputs
+		if msg.String() == "k" && m.settingsCursor > 0 {
+			m.settingsCursor--
+		} else if msg.String() == "j" && m.settingsCursor < len(ui.ThemeOrder)+1 {
+			m.settingsCursor++
+		}
+	}
+
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) renderSettings() string {
@@ -2212,17 +2283,20 @@ func (m model) renderSettings() string {
 
 	// ── API Configuration ────────────────────────────────────────────────
 	sb.WriteString(sectionStyle.Render("── API Configuration") + "\n\n")
-	apiKey := os.Getenv("INFERX_API_KEY")
-	if len(apiKey) > 8 {
-		apiKey = apiKey[:4] + strings.Repeat("•", len(apiKey)-8) + apiKey[len(apiKey)-4:]
-	} else if len(apiKey) > 0 {
-		apiKey = strings.Repeat("•", len(apiKey))
-	} else {
-		apiKey = dimStyle.Render("(not set — export INFERX_API_KEY)")
+	
+	apiCursor := "  "
+	if m.settingsCursor == 0 {
+		apiCursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
 	}
-	sb.WriteString(fmt.Sprintf("  %-12s %s\n", "API Key:", apiKey))
-	sb.WriteString(fmt.Sprintf("  %-12s %s\n", "Model:", dimStyle.Render("google/gemma-4-31b")))
-	sb.WriteString(fmt.Sprintf("  %-12s %s\n\n", "Proxy:", dimStyle.Render("https://litellm-proxy-93ef.onrender.com/v1")))
+	sb.WriteString(fmt.Sprintf("%s%-10s %s\n", apiCursor, "API Key:", m.apiInput.View()))
+	
+	modCursor := "  "
+	if m.settingsCursor == 1 {
+		modCursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
+	}
+	sb.WriteString(fmt.Sprintf("%s%-10s %s\n", modCursor, "Model:", m.modelInput.View()))
+	
+	sb.WriteString(fmt.Sprintf("  %-10s %s\n\n", "Proxy:", dimStyle.Render("https://litellm-proxy-93ef.onrender.com/v1")))
 
 	// ── Theme ────────────────────────────────────────────────────────────
 	sb.WriteString(sectionStyle.Render("── Theme") + "\n\n")
@@ -2232,7 +2306,7 @@ func (m model) renderSettings() string {
 		label := th.Name
 		dot := lipgloss.NewStyle().Foreground(th.Primary).Render("●")
 		isCurrent := name == m.themeName || (m.themeName == "" && name == "default")
-		if i == m.settingsCursor {
+		if i+2 == m.settingsCursor {
 			cursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
 			label = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render(label)
 		} else {
