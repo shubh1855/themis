@@ -280,8 +280,8 @@ type model struct {
 	thinkLineCount    int           // how many think lines suppressed (shown in quiet status)
 	viewportNeedsSync bool          // debounce flag for viewport string re-renders
 	viewportLastSync  time.Time     // limits full viewport reflow while agents stream tokens
-	
-    // ── Render cache ──
+
+	// ── Render cache ──
 	renderedCache []string
 	renderedRaw   []string
 	renderedW     int
@@ -648,7 +648,7 @@ func (m *model) renderContent() string {
 	}
 
 	// Dynamic word-wrap cache mechanism
-	// Recalculating ANSI-wraps purely with lipgloss across 100kb+ of terminal history 10 times a second 
+	// Recalculating ANSI-wraps purely with lipgloss across 100kb+ of terminal history 10 times a second
 	// is the direct root cause of UI frame latency when agents spin up.
 	// By caching historical formatted blocks, we map the workload from O(N) to O(1) instantly.
 
