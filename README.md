@@ -1,91 +1,86 @@
-# 🏛️ Themis
-**An Advanced Agentic Multi-Agent TUI Assistant**
+# Themis
+**Advanced Agentic Multi-Agent Assistant**
 
-Themis is a cutting-edge interactive command-line application that seamlessly merges an expressive Terminal User Interface (TUI) with a powerful LLM backend (Google Gemma-4-31B via LiteLLM). Operating on a true multi-agent ReAct architecture, Themis functions as an autonomous pair programmer—capable of deep codebase search, running processes, building features, resolving errors, and managing your terminal environment directly.
-
----
-
-## 🛠️ High-Level Architecture
-The application runs as a cohesive monolith written in Go, relying extensively on [Bubble Tea](https://github.com/charmbracelet/bubbletea) for a stateful TUI, with multiple asynchronous subsystems operating in tandem:
-
-1. **TUI & State Manager** (`main.go`, `internal/ui`): Manages the view modes (Dashboard, Chat, Settings, MCP), orchestrates interactions, streams tokens dynamically, and renders Markdown content natively.
-2. **ReAct Execution Engine** (`internal/llm/react.go`, `internal/tools/executor.go`): The brain of Themis. Parses inputs, drives agent prompt loops to think/act/observe, routes tool execution, and builds context chains. 
-3. **Agent Federation** (`internal/prompt/agents/`): Distinct specialized prompts corresponding to different domain expert personas (Zeus, Athena, Hephaestus, etc.).
-4. **Tool Sandbox & Registry** (`internal/tools/`): Maps LLM JSON tool requests to actual native Go functions. Regulated by a strict permission gate (`permissions.go`).
-5. **RAG / Vector Subsystem** (`internal/qdrant/`): Plugs into Qdrant to auto-index the workspace directory, embedding file chunks to feed the AI via the `search_files` tool.
-6. **Data & Persistence** (`internal/dbx/`): Tracks user projects, conversations, dashboard configuration, and token usage locally in an SQLite datastore.
-7. **Model Context Protocol (MCP)** (`internal/mcp/`): Allows bridging external tools and services directly to Themis agents via the MCP RPC standard.
+Themis is a highly autonomous command-line application that merges a Terminal User Interface (TUI) with an advanced multi-agent Language Model backend. Operating on a ReAct architecture, Themis functions as an autonomous pair programmer—capable of performing deep codebase searches, executing processes, implementing features, resolving errors, and managing the terminal environment directly.
 
 ---
 
-## 🗂️ Codebase Breakdown
+## Architecture Overview
+The application is a resilient Go monolith relying extensively on Bubble Tea for a stateful TUI, utilizing multiple asynchronous subsystems:
 
-The project follows idiomatic Go patterns, breaking heavy logic down into specific packages nested within the `internal/` boundary.
+1. **TUI & State Manager** (`main.go`, `internal/ui`): Manages the view modes (Dashboard, Chat, Settings, MCP), orchestrates interactions, streams tokens dynamically, and natively renders Markdown content.
+2. **ReAct Execution Engine** (`internal/llm/react.go`, `internal/tools/executor.go`): Parses inputs, drives agent loops to iterate upon thoughts, actions, and observations, routes tool execution, and builds context logic.
+3. **Agent Federation** (`internal/prompt/agents/`): Contains distinct, specialized prompts corresponding to different domain expert roles (e.g., system orchestration, architecture, engineering, validation).
+4. **Tool Sandbox & Registry** (`internal/tools/`): Maps LLM tool requests to executable Go functions, securely regulated by a strict permission boundary.
+5. **RAG / Vector Subsystem** (`internal/qdrant/`): Integrates with Qdrant to incrementally index the workspace directory, embedding file chunks to supply context during searches.
+6. **Data & Persistence** (`internal/dbx/`): Tracks user projects, conversations, dashboard configuration, and token usage via a local SQLite datastore.
+7. **Model Context Protocol (MCP)** (`internal/mcp/`): Bridges external tools and services directly to Themis agents via standard RPCs.
+
+---
+
+## Codebase Breakdown
+
+The project follows strict Go best practices, abstracting complex logic into focused internal packages.
 
 ### Core Foundation
-- **`main.go`**: The entry point. Handles Bubble Tea lifecycle (Init, Update, View), integrates the LLM bridging, and ties components together.
-- **`go.mod` & `go.sum`**: Includes standard deps like `go-openai`, `bubbletea`, `go-rod`, `chroma`, `modernc.org/sqlite`, and `pty`.
-- **`CLAUDE.md`**: Outlines tool constraints, file flow, and commands for adjacent AIs contributing to the project.
+- **`main.go`**: The entry point. Handles the lifecycle, integrates the LLM bridging, and ties dependencies together.
+- **`CLAUDE.md`**: Outlines tool constraints, file flows, and commands for LLMs contributing to the repository.
 
 ### Internal Modules (`internal/`)
-- `appdir/`: Ensures persistent user data directories are consistently provisioned across OS platforms.
-- `audio/`: Logic for handling whisper transcription or audio interactions.
-- `auth/`: Cross-system authentication integrations.
-- `cache/`: Volatile system memory to reduce repeat LLM/API calls.
-- `dbx/`: SQLite wrapper containing logic for `projects.go`, `settings.go`, `usage.go`, and `migrate.go` ensuring persistent user states.
-- `files/`: General file manipulation and validation helpers complementing the `tools` sandbox.
-- `gitx/`: Source control abstractions (staging, diffing, branching).
-- `httpx/`: Handles any incoming/outgoing generic web request structures.
-- `llm/`: Contains the fundamental AI loop constraints. `client.go` acts as a facade to interact with models, while `react.go` embodies the core Thought/Action/Observation event loop that drives the multi-agent system.
-- `logger/`: Structured application logging handling output distinct from the TUI.
-- `mcp/`: Contains `client.go`, `manager.go`, and `types.go` that bootstrap MCP servers and allow the LLM to route actions to external plugins dynamically.
-- `models/`: Contains centralized struct definitions used globally.
-- `prompt/`: Holds routing and initialization logic for the system prompt construction. Its major subsidiary is `agents/`.
-  - **`prompt/agents/`**: Specifically houses the meticulously crafted prompts for the system's specialized roles:
-    - *01_zeus.go* (System Orchestrator)
-    - *02_athena.go* (Architect & Researcher)
-    - *03_hephaestus.go* (Lead Engineer & Coder)
-    - *04_apollo.go* (Debugger & Validator)
-    - *05_hermes.go* (Communicator & Documenter)
-    - *06_ares.go* (Operations & Security)
-    - *07_prometheus.go* (Visionary / Unbound Intelligence)
-- `qdrant/`: Manages the local vector DB connection (`qdrant.go`, `client.go`), embedding document chunks for efficient, token-saving RAG inside large workspaces.
-- `registry/`: General service locator to avoid circular dependencies between massive internal domains.
-- `scraper/`: Web traversal leveraging `go-rod` (headless browser controller) to scrape documentation/answers.
-- `search/`: Fallback or specialized AST/text string search utilities.
-- `security/`: Encapsulates path validation and token sanitization logic.
-- `syntax/`: Grammar and AST breakdown algorithms for parsing code buffers.
-- `system/`: Broad OS utilities.
-- `tester/`: In-built sandbox runner used by agents to run TDD evaluations automatically.
-- `tools/`: The action framework accessed by LLM context.
-  - Features tools for database mutation (`db_tools.go`), files (`file_tools.go`, `fs.go`), Git operations (`git_tools.go`, `github_tools.go`), bash execution (`process_tools.go`), browser reading (`web_tools.go`) and LLM reflection (`test_tools.go`). Handled actively via `registry.go` and `executor.go`. Includes permission management to protect end-users.
-- `tty/`: Contains `tty_unix.go`, `tty_windows.go`, and `tty.go`. Enables pseudo-terminal creation allowing the AI to run real OS commands interactively instead of merely writing files.
-- `ui/`: Encapsulates reusable UI elements like colors (`theme.go`), mappings (`keys.go`), styles (`styles.go`), and the reactive `taskgraph.go`.
-- `worker/`: A goroutine pool for delegating background indexing and parallel RAG embeddings without freezing the TUI event loop.
+- `appdir/`: Ensures persistent user data directories are correctly provisioned across platforms.
+- `audio/`: Handles background recording and whisper transcription.
+- `auth/`: Manages cross-system authentication mechanisms.
+- `cache/`: Implements volatile memory to optimize redundant LLM inference calls.
+- `dbx/`: SQLite wrapper handling persistent states for projects, settings, and usage.
+- `files/`: Contains file manipulation and validation routines interfacing with the execution sandbox.
+- `gitx/`: Abstracts source control integration (staging, diffing, branching).
+- `httpx/`: Handles structured generic web requests.
+- `llm/`: Constrains the core AI processing limits. Contains facade logic for interacting with models and the primary ReAct processing loop.
+- `mcp/`: Contains implementations that bootstrap MCP servers and allow the LLM to access external plugin routes dynamically.
+- `prompt/agents/`: Holds the meticulously crafted prompts for specialized roles (System Orchestrator, Architect, Engineer, Validator, Documenter, Operations, etc.).
+- `qdrant/`: Manages local scalable vector databases, handling embeddings natively.
+- `scraper/`: Web traversal logic leveraging headless browser control modules for active automated quality assurance.
+- `tty/`: Contains modules that construct raw pseudo-terminals allowing the interface to natively bridge operating system terminal interactions safely.
 
-## ⚙️ How It Works
+## Execution Flow
 
-1. **Initialization:** Starting Themis builds the SQLite DB, boots Qdrant indices, tests MCP bridges, and opens the main dashboard view.
-2. **Context Creation:** The user sends natural language queries via the Terminal textarea.
+1. **Initialization:** Themis establishes the SQLite relational stores, initiates Qdrant indices, tests MCP bridges, and opens the main TUI.
+2. **Context Creation:** Users send standard natural language instructions via the interface.
 3. **Agent ReAct Loop:**
-   - The Active Agent answers with JSON containing either natural `message` or a `tool` request.
-   - If a tool is requested (`write_file`, `run_cmd`, `github_pr`), the `executor.go` validates it via the Registry.
-   - The tool executes natively on the file system or standard OS terminal, and the result is fed back into the agent as an observation.
-4. **Resolution:** The AI iterates through thoughts and actions until the requested task is verified dynamically via testing tools or human approval.
+   - The Active Agent returns iterative responses utilizing natural messaging or invoking standard system tools.
+   - Any invoked tools are processed securely by the execution layer natively within the operating environment.
+   - Outputs are returned as observations until task requirements are programmatically fulfilled.
+4. **Resolution:** Artificial operators verify task completions utilizing deployment verification procedures before finalizing outputs.
 
-## 🚀 Getting Started
+## Installation
 
+### Precompiled Binary Installation (Recommended)
+
+To streamline installations across endpoints securely, you can run the following automated installation scripts. These scripts dynamically resolve the appropriate artifacts tailored to your processor architecture from the private repository.
+
+**Linux / macOS:**
 ```bash
-# Clone the repository
+# Requires an environment variable or argument holding a standard Github Personal Access Token
+curl -sL https://raw.githubusercontent.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/main/scripts/install.sh | bash -s -- YOUR_GITHUB_TOKEN
+```
+
+*(Alternatively, if an infrastructure administrator has deployed the Cloudflare proxy infrastructure stored in `scripts/proxy-worker.js`, point the cURL endpoint to the provisioned public edge server URL to bypass client-side token requirements entirely.)*
+
+**Windows (PowerShell):**
+```powershell
+# Download and execute the Windows resolution script natively
+iwr https://raw.githubusercontent.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/main/scripts/install.ps1 -useb | iex
+```
+*(The scripts natively acquire the binaries, extract them, and append the executable directly to your environment variables.)*
+
+### Source Compilation
+
+If you possess read privileges to the repository and prefer to compile the monolith natively:
+```bash
 git clone <repository_url>
-
-# Inside the root folder, tidy your Go environment
+cd <repository_directory>
 go mod tidy
-
-# Execute the local builder
 go build -o themis main.go
-
-# Start the multi-agent TUI
 ./themis
 ```
-*Note: Ensure you configure the API key inside Settings within the TUI or define `INFERX_API_KEY` in your environment variables.*
+*(Ensure valid API keys are configured globally within the TUI settings immediately post-initialization.)*
