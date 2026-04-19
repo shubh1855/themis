@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -19,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	openai "github.com/sashabaranov/go-openai"
 
 	"github.com/NimbleMarkets/ntcharts/barchart"
@@ -38,6 +41,8 @@ import (
 // ── Styles for dashboard ────────────────────────────────────────────────
 
 var (
+	mouseEscapePattern = regexp.MustCompile(`\x1b?\[<\d+;\d+;\d+[Mm]`)
+
 	// Gradient-esque brand colours
 	brandPrimary   = lipgloss.Color("205") // hot pink
 	brandSecondary = lipgloss.Color("141") // lavender
@@ -101,6 +106,57 @@ var (
      ██║   ██║  ██║███████╗██║ ╚═╝ ██║██║███████║
      ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝╚═╝╚══════╝`
 )
+
+const (
+	viewportSyncInterval = 90 * time.Millisecond
+	maxThinkDisplayBytes = 12000
+)
+
+func screenSize(w, h int) (int, int) {
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	return w, h
+}
+
+func contentWidth(totalWidth int, style lipgloss.Style) int {
+	return max(1, totalWidth-style.GetHorizontalFrameSize())
+}
+
+func chatColumns(width int) (mainW, graphW int) {
+	width, _ = screenSize(width, 0)
+	mainW = width * 80 / 100
+	graphW = width - mainW
+	if mainW < 60 || graphW < 24 {
+		return width, 0
+	}
+	return mainW, graphW
+}
+
+func clipLine(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return ansi.Truncate(s, width, "")
+}
+
+func fitBlock(s string, width, height int) string {
+	width, height = screenSize(width, height)
+	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	for i := range lines {
+		lines[i] = clipLine(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
 
 // ── Dashboard list items ────────────────────────────────────────────────
 
@@ -176,19 +232,19 @@ type model struct {
 	themeName      string // name of current theme key (saved to DB)
 
 	// ── Usage stats (loaded when settings opens) ──
-	usageLogs    []dbx.UsageEntry
-	usageTotalIn int
+	usageLogs     []dbx.UsageEntry
+	usageTotalIn  int
 	usageTotalOut int
 
 	// ── Multimodal ──
 	pendingImages []string // image paths to attach to next prompt
 
 	// ── Token tracking ──
-	curInputTokens  int // input tokens for the current/last request
-	curOutputTokens int // output tokens for current response (live)
+	curInputTokens  int  // input tokens for the current/last request
+	curOutputTokens int  // output tokens for current response (live)
 	tokenStreaming  bool // true while a response is being streamed
-	sessionIn       int // cumulative session input tokens
-	sessionOut      int // cumulative session output tokens
+	sessionIn       int  // cumulative session input tokens
+	sessionOut      int  // cumulative session output tokens
 
 	// ── Conversation memory ──
 	chatLog        []string // plain-text rolling log for cross-prompt context
@@ -214,12 +270,18 @@ type model struct {
 
 	reactCh     <-chan tea.Msg
 	activeAgent llm.AgentID
+	thinkAgent  llm.AgentID
 	thinkIdx    int
+	thinkStr    string
+	thinkDirty  bool
 
 	// ── Verbose / quiet mode ──
-	verboseMode      bool   // true = show all THOUGHT streaming; false = compact loading
+	verboseMode       bool          // true = show all THOUGHT streaming; false = compact loading
 	nonVerboseSpinner spinner.Model // a different spinner shown in quiet mode
-	thinkLineCount   int    // how many think lines suppressed (shown in quiet status)
+	thinkLineCount    int           // how many think lines suppressed (shown in quiet status)
+	thinkTruncated    bool          // true when long live thinking text was capped for UI performance
+	viewportNeedsSync bool          // debounce flag for viewport string re-renders
+	viewportLastSync  time.Time     // limits full viewport reflow while agents stream tokens
 
 	taskGraph    *ui.TaskGraph
 	activeTaskID string
@@ -522,14 +584,14 @@ func initialModel() model {
 		history:     []string{},
 		selectedSug: -1,
 		thinkIdx:    -1,
-		verboseMode: true, // start in verbose mode
+		verboseMode: false, // quiet by default keeps scrolling responsive; ctrl+v shows full thinking
 		nonVerboseSpinner: func() spinner.Model {
 			s := spinner.New()
 			s.Spinner = spinner.Points
 			s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true)
 			return s
 		}(),
-		taskGraph:   ui.NewTaskGraph(),
+		taskGraph: ui.NewTaskGraph(),
 	}
 }
 
@@ -581,10 +643,30 @@ func (m *model) renderContent() string {
 		strings.Join(m.history, "\n\n"))
 }
 
-func (m *model) pushOutput(text string) {
-	m.history = append(m.history, text)
+func (m *model) syncViewportNow(followBottom bool) {
+	m.refreshThinkBlock()
 	m.viewport.SetContent(m.renderContent())
-	m.viewport.GotoBottom()
+	if followBottom {
+		m.viewport.GotoBottom()
+	}
+	m.viewportNeedsSync = false
+	m.viewportLastSync = time.Now()
+}
+
+func (m *model) syncViewportIfNeeded(force bool) {
+	if !m.viewportNeedsSync && !m.thinkDirty {
+		return
+	}
+	if !force && !m.viewportLastSync.IsZero() && time.Since(m.viewportLastSync) < viewportSyncInterval {
+		return
+	}
+	m.syncViewportNow(m.viewport.AtBottom())
+}
+
+func (m *model) pushOutput(text string) {
+	followBottom := len(m.history) == 0 || m.viewport.AtBottom()
+	m.history = append(m.history, text)
+	m.syncViewportNow(followBottom)
 }
 
 func (m *model) pushAgentOutput(agent llm.AgentID, text string) {
@@ -594,31 +676,77 @@ func (m *model) pushAgentOutput(agent llm.AgentID, text string) {
 }
 
 func (m *model) updateViewport() {
-	m.viewport.SetContent(m.renderContent())
-	m.viewport.GotoBottom()
+	m.viewportNeedsSync = true
+}
+
+func (m *model) refreshThinkBlock() {
+	if !m.thinkDirty || m.thinkIdx < 0 || m.thinkIdx >= len(m.history) || !m.verboseMode {
+		return
+	}
+	m.history[m.thinkIdx] = m.renderLiveThinkBlock()
+	m.thinkDirty = false
+}
+
+func (m *model) renderLiveThinkBlock() string {
+	agent := m.thinkAgent
+	if agent == "" {
+		agent = m.activeAgent
+	}
+	badge := ui.AgentStyle(string(agent)).Render(llm.AgentEmoji(agent) + " " + string(agent))
+	header := badge + " " + ui.ThinkStyle.Render("thinking...")
+	body := m.thinkStr
+	if m.thinkTruncated {
+		body = "[older thinking omitted to keep scrolling responsive]\n" + body
+	}
+	if strings.TrimSpace(body) == "" {
+		return header
+	}
+	return header + "\n" + ui.ThinkStyle.Render(body)
+}
+
+func appendBounded(base, chunk string, maxBytes int) (string, bool) {
+	if chunk == "" || maxBytes <= 0 {
+		return base, false
+	}
+	combined := base + chunk
+	if len(combined) <= maxBytes {
+		return combined, false
+	}
+	start := len(combined) - maxBytes
+	for start < len(combined) && !utf8.RuneStart(combined[start]) {
+		start++
+	}
+	return combined[start:], true
 }
 
 func (m *model) resizeView() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	overhead := 11 + len(m.suggestions)
+	footerH := 5
+	if m.review != nil {
+		footerH = 4
+	} else if len(m.pendingImages) > 0 {
+		footerH++
+	}
+	overhead := 4 + footerH + 2 + len(m.suggestions)
 	h := m.height - overhead
 	if h < 1 {
 		h = 1
 	}
-	mainW := m.width * 80 / 100
-	if mainW < 40 {
-		mainW = m.width - 4
-	}
-	m.viewport.Width = mainW - 4
+	mainW, _ := chatColumns(m.width - 1)
+	m.viewport.Width = contentWidth(mainW, ui.BorderStyle)
 	m.viewport.Height = h
-	m.input.SetWidth(m.width - 6)
+	m.input.SetWidth(max(20, contentWidth(m.width-1, ui.BorderStyle)-2))
 	m.help.Width = m.width
 }
 
 func (m *model) startThinkBlock(agent llm.AgentID) {
 	m.thinkLineCount = 0
+	m.thinkStr = ""
+	m.thinkDirty = false
+	m.thinkTruncated = false
+	m.thinkAgent = agent
 	if !m.verboseMode {
 		// Quiet mode: push a single placeholder line we'll update in-place
 		badge := ui.AgentStyle(string(agent)).Render(
@@ -628,10 +756,7 @@ func (m *model) startThinkBlock(agent llm.AgentID) {
 		m.updateViewport()
 		return
 	}
-	badge := ui.AgentStyle(string(agent)).Render(
-		llm.AgentEmoji(agent) + " " + string(agent))
-	header := badge + " " + ui.ThinkStyle.Render("thinking...")
-	m.history = append(m.history, header+"\n")
+	m.history = append(m.history, m.renderLiveThinkBlock())
 	m.thinkIdx = len(m.history) - 1
 	m.updateViewport()
 }
@@ -650,12 +775,48 @@ func (m *model) appendToThink(chunk string) {
 	clean = strings.ReplaceAll(clean, "THOUGHT :", "")
 	clean = strings.ReplaceAll(clean, "ACTION:", "")
 	clean = strings.ReplaceAll(clean, "ACTION :", "")
-	m.history[m.thinkIdx] += ui.ThinkStyle.Render(clean)
+	var truncated bool
+	m.thinkStr, truncated = appendBounded(m.thinkStr, clean, maxThinkDisplayBytes)
+	if truncated {
+		m.thinkTruncated = true
+	}
+	m.thinkDirty = true
 	m.updateViewport()
 }
 
 func (m *model) endThinkBlock() {
+	if m.thinkIdx >= 0 && m.thinkIdx < len(m.history) {
+		agent := m.thinkAgent
+		if agent == "" {
+			agent = m.activeAgent
+		}
+		badge := ui.AgentStyle(string(agent)).Render(llm.AgentEmoji(agent) + " " + string(agent))
+
+		if !m.verboseMode {
+			status := "processed"
+			if m.thinkLineCount > 0 {
+				status = fmt.Sprintf("processed %d streamed update(s)", m.thinkLineCount)
+			}
+			m.history[m.thinkIdx] = badge + " " + ui.ThinkStyle.Render(status)
+			m.updateViewport()
+		} else if m.thinkStr != "" {
+			clean := strings.TrimSpace(m.thinkStr)
+			if clean != "" {
+				if m.thinkTruncated {
+					clean = "[older thinking omitted to keep scrolling responsive]\n\n" + clean
+				}
+				header := badge + " › " + ui.ThinkStyle.Render("thinking finished")
+				m.history[m.thinkIdx] = header + "\n" + renderMarkdown(clean)
+				m.updateViewport()
+			}
+		}
+	}
 	m.thinkIdx = -1
+	m.thinkStr = ""
+	m.thinkDirty = false
+	m.thinkTruncated = false
+	m.thinkLineCount = 0
+	m.thinkAgent = ""
 }
 
 func truncate(s string, max int) string {
@@ -769,6 +930,20 @@ func (m *model) confirmReview(opt reviewOpt) tea.Cmd {
 	return nil
 }
 
+func moveIndex(current, delta, length int) int {
+	if length <= 0 {
+		return 0
+	}
+	current += delta
+	if current < 0 {
+		return 0
+	}
+	if current >= length {
+		return length - 1
+	}
+	return current
+}
+
 // ── Update ──────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -809,6 +984,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
+		m.syncViewportIfNeeded(false)
+
 		if m.loading || m.running {
 			m.spinner, cmd = m.spinner.Update(msg)
 			m.nonVerboseSpinner, _ = m.nonVerboseSpinner.Update(msg)
@@ -817,28 +994,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.nonVerboseSpinner.Tick
 
 	case tea.WindowSizeMsg:
+		followBottom := m.viewport.AtBottom()
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeView()
+		m.syncViewportNow(followBottom)
 
 	case tea.MouseMsg:
-		if m.viewMode == ViewChat {
-			switch msg.Button {
-			case tea.MouseButtonWheelUp:
-				m.viewport.LineUp(3)
-				return m, nil
-			case tea.MouseButtonWheelDown:
-				m.viewport.LineDown(3)
-				return m, nil
-			case tea.MouseButtonLeft:
-				if (msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease) &&
-					len(m.suggestions) > 0 {
-					sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
-					if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
-						m.selectedSug = idx
-						m.input.SetValue(m.suggestions[idx])
-						m.input.CursorEnd()
-					}
+		if msg.Action == tea.MouseActionMotion {
+			return m, nil
+		}
+
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			switch m.viewMode {
+			case ViewChat:
+				m.syncViewportIfNeeded(true)
+				m.viewport.LineUp(2)
+			case ViewDashboard:
+				m.dashCursor = moveIndex(m.dashCursor, -1, len(m.dashItems))
+			case ViewSettings:
+				m.settingsCursor = moveIndex(m.settingsCursor, -1, len(ui.ThemeOrder))
+			case ViewMCP:
+				m.mcpCursor = moveIndex(m.mcpCursor, -1, len(m.mcpManager.Statuses()))
+			}
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			switch m.viewMode {
+			case ViewChat:
+				m.syncViewportIfNeeded(true)
+				m.viewport.LineDown(2)
+			case ViewDashboard:
+				m.dashCursor = moveIndex(m.dashCursor, 1, len(m.dashItems))
+			case ViewSettings:
+				m.settingsCursor = moveIndex(m.settingsCursor, 1, len(ui.ThemeOrder))
+			case ViewMCP:
+				m.mcpCursor = moveIndex(m.mcpCursor, 1, len(m.mcpManager.Statuses()))
+			}
+			return m, nil
+		case tea.MouseButtonLeft:
+			if m.viewMode == ViewChat && msg.Action == tea.MouseActionPress && len(m.suggestions) > 0 {
+				sugTop := m.height - 1 - 3 - 1 - len(m.suggestions)
+				if idx := msg.Y - sugTop; idx >= 0 && idx < len(m.suggestions) {
+					m.selectedSug = idx
+					m.input.SetValue(m.suggestions[idx])
+					m.input.CursorEnd()
 				}
 			}
 		}
@@ -868,7 +1068,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.history[m.runOutputIdx] += ui.StatusStyle.Render("\n► done")
 			m.updateViewport()
 		}
-		
+
 		cmd := m.drainQueue()
 		if cmd != nil {
 			return m, cmd
@@ -878,9 +1078,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.reactCh == nil && m.activeAgent != llm.AgentZeus && m.activeAgent != "" {
 			m.activeAgent = llm.AgentZeus
 			m.loading = true
-			
+
 			prompt := fmt.Sprintf("Sub-agent has finished its PTY tool execution. Analyze the outcome, call complete_step for your current task, and either delegate the next step or provide a final ANSWER to the user.")
-			
+
 			if m.taskGraph != nil && m.taskGraph.Root != nil {
 				m.activeTaskID = m.taskGraph.Root.ID
 			}
@@ -1000,7 +1200,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// To fix this gracefully without breaking PTY loops, we process the queue,
 			// and then immediately drop down to the Zeus orchestration handoff below.
 			if cmd != nil {
-				return m, cmd // Wait, if it's PTY, returning cmd means we pause. 
+				return m, cmd // Wait, if it's PTY, returning cmd means we pause.
 				// We actually need a way to resume Zeus after PTY finishes (in apptty.DoneMsg).
 			}
 		}
@@ -1010,9 +1210,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Agent != llm.AgentZeus {
 			m.activeAgent = llm.AgentZeus
 			m.loading = true
-			
+
 			prompt := fmt.Sprintf("Sub-agent %s has finished its delegated execution. Analyze the outcome, call complete_step for your current task, and either delegate the next step or provide a final ANSWER to the user.", msg.Agent)
-			
+
 			if m.taskGraph != nil && m.taskGraph.Root != nil {
 				m.activeTaskID = m.taskGraph.Root.ID
 			}
@@ -1320,8 +1520,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activeTaskID = rootID
 
 			chatCtx := m.buildChatContext()
-			ep := effectivePrompt     // capture for closure
-			imgs := m.pendingImages   // capture images; clear from model
+			ep := effectivePrompt   // capture for closure
+			imgs := m.pendingImages // capture images; clear from model
 			m.pendingImages = nil
 
 			// Build combined context: chat history + Qdrant vector search
@@ -1350,6 +1550,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.input, cmd = m.input.Update(msg)
+
+		// Protective Regex Filter:
+		// If terminal latency caused SGR mouse bytes to bypass bubbletea's
+		// internal mouse parser and dump as string keys into our textarea,
+		// we instantly vaporize them here so they never show up.
+		val := m.input.Value()
+		if strings.Contains(val, "[<") {
+			if mouseEscapePattern.MatchString(val) {
+				m.input.SetValue(mouseEscapePattern.ReplaceAllString(val, ""))
+			}
+		}
+
 		return m, cmd
 	}
 
@@ -1507,25 +1719,6 @@ func (m model) renderDashboard() string {
 	sep := lipgloss.NewStyle().Foreground(brandDim).Render(strings.Repeat("─", min(w-8, 70)))
 	sb.WriteString("  " + sep + "\n\n")
 
-	// Items list
-	hasProjects := false
-	hasChats := false
-	for _, item := range m.dashItems {
-		if item.kind == "project" && !hasProjects {
-			sb.WriteString("  " + dashSectionTitle.Render("📂 PROJECTS") + "\n")
-			hasProjects = true
-		}
-		if item.kind == "chat" && !hasChats {
-			sb.WriteString("\n  " + dashSectionTitle.Render("💬 RECENT CHATS") + "\n")
-			hasChats = true
-		}
-		if item.kind == "action" && (hasProjects || hasChats) {
-			sb.WriteString("\n  " + sep + "\n")
-			hasProjects = false
-			hasChats = false
-		}
-	}
-
 	// Reset and render the actual items
 	sb.Reset()
 	sb.WriteString(logoStyle.Render(logoArt))
@@ -1533,18 +1726,41 @@ func (m model) renderDashboard() string {
 	sb.WriteString("\n\n")
 	sb.WriteString("  " + sep + "\n\n")
 
+	maxItems := h - 18
+	if maxItems < 5 {
+		maxItems = 5
+	}
+	startIdx := 0
+	endIdx := len(m.dashItems)
+
+	if len(m.dashItems) > maxItems {
+		startIdx = m.dashCursor - maxItems/2
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		endIdx = startIdx + maxItems
+		if endIdx > len(m.dashItems) {
+			endIdx = len(m.dashItems)
+			startIdx = endIdx - maxItems
+			if startIdx < 0 {
+				startIdx = 0
+			}
+		}
+	}
+
 	lastKind := ""
-	for i, item := range m.dashItems {
+	for i := startIdx; i < endIdx; i++ {
+		item := m.dashItems[i]
 		// Section headers
 		if item.kind != lastKind {
 			switch item.kind {
 			case "project":
-				sb.WriteString("  " + dashSectionTitle.Render("📂 PROJECTS") + "\n")
+				sb.WriteString("  " + dashSectionTitle.Render("[ PROJECTS ]") + "\n")
 			case "chat":
 				if lastKind != "" {
 					sb.WriteString("\n")
 				}
-				sb.WriteString("  " + dashSectionTitle.Render("💬 RECENT CHATS") + "\n")
+				sb.WriteString("  " + dashSectionTitle.Render("[ RECENT CHATS ]") + "\n")
 			case "action":
 				sb.WriteString("\n  " + sep + "\n")
 			}
@@ -1686,6 +1902,9 @@ func (m model) renderTasks() string {
 // ── Chat View (existing Themis UI) ──────────────────────────────────────
 
 func (m model) renderChat() string {
+	screenW, screenH := screenSize(m.width, m.height)
+	layoutW := max(1, screenW-1)
+
 	status := "Ready"
 	if m.loading {
 		agentBadge := ""
@@ -1705,24 +1924,22 @@ func (m model) renderChat() string {
 		status = m.spinner.View() + " Running..."
 	}
 
-	mainW := m.width * 80 / 100
-	graphW := m.width - mainW
-	if mainW < 40 {
-		mainW = m.width
-		graphW = 0
-	}
+	mainW, graphW := chatColumns(layoutW)
+	leftContentW := contentWidth(mainW, ui.BorderStyle)
 
 	bodyContent := lipgloss.NewStyle().
+		Width(leftContentW).
+		MaxWidth(leftContentW).
 		Height(m.viewport.Height).
 		MaxHeight(m.viewport.Height).
 		Render(m.viewport.View())
-	leftPanel := ui.BorderStyle.Copy().Width(mainW - 2).Render(
+	leftPanel := ui.BorderStyle.Copy().Width(leftContentW).Render(
 		ui.TitleStyle.Render("Themis") + "\n\n" + bodyContent)
 
 	var topRow string
-	if graphW > 8 {
+	if graphW > 0 {
 		graphH := m.viewport.Height + 4
-		rightPanel := m.taskGraph.Render(graphW, graphH)
+		rightPanel := m.taskGraph.Render(max(1, graphW-2), graphH)
 		topRow = lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 	} else {
 		topRow = leftPanel
@@ -1733,9 +1950,9 @@ func (m model) renderChat() string {
 		lines := make([]string, len(m.suggestions))
 		for i, s := range m.suggestions {
 			if i == m.selectedSug {
-				lines[i] = ui.SelectedSuggestionStyle.Render("[*] " + s)
+				lines[i] = clipLine(ui.SelectedSuggestionStyle.Render("[*] "+s), layoutW)
 			} else {
-				lines[i] = ui.SuggestionStyle.Render("[ ] " + s)
+				lines[i] = clipLine(ui.SuggestionStyle.Render("[ ] "+s), layoutW)
 			}
 		}
 		sugView = lipgloss.JoinVertical(lipgloss.Left, lines...)
@@ -1749,18 +1966,19 @@ func (m model) renderChat() string {
 		if len(m.pendingImages) > 0 {
 			inputView += fmt.Sprintf("\n  📎 %d image(s) attached (ctrl+o to add more)", len(m.pendingImages))
 		}
-		footer = ui.BorderStyle.Render(inputView)
+		footer = ui.BorderStyle.Copy().Width(contentWidth(layoutW, ui.BorderStyle)).Render(inputView)
 	}
 
-	tokenBar := m.renderTokenBar()
-	helpBar := ui.StatusStyle.Render(status + "  │  " + m.help.View(ui.Keys) + "  │  esc: dashboard  ctrl+t: tasks  ctrl+p: MCP  ctrl+o: image")
+	tokenBar := clipLine(m.renderTokenBar(), layoutW)
+	helpText := status + "  │  " + m.help.View(ui.Keys) + "  │  esc: dashboard  ctrl+t: tasks  ctrl+p: MCP  ctrl+o: image"
+	helpBar := ui.StatusStyle.Render(clipLine(helpText, layoutW))
 
 	parts := []string{topRow}
 	if sugView != "" {
 		parts = append(parts, sugView)
 	}
 	parts = append(parts, footer, tokenBar, helpBar)
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return fitBlock(lipgloss.JoinVertical(lipgloss.Left, parts...), layoutW, screenH)
 }
 
 func (m model) renderTokenBar() string {
@@ -1899,7 +2117,9 @@ func (m model) reviewFooter() string {
 		opts = append(opts, s)
 	}
 	hint := ui.ReviewHintStyle.Render("  ←→ navigate   enter confirm   y/n/a shortcut")
-	return ui.BorderStyle.Render(strings.Join(opts, " ") + "\n" + hint)
+	width := contentWidth(m.width-1, ui.BorderStyle)
+	return ui.BorderStyle.Copy().Width(width).Render(
+		clipLine(strings.Join(opts, " "), width) + "\n" + clipLine(hint, width))
 }
 
 func renderMarkdown(content string) string {

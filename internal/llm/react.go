@@ -16,7 +16,6 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-
 type ThinkChunkMsg struct {
 	Agent AgentID
 	Chunk string
@@ -88,6 +87,12 @@ type ToolExecutor func(tool string, args map[string]interface{}) (string, error)
 
 const maxReactSteps = 30
 
+const (
+	streamTokenUpdateStep = 800
+	streamThinkChunkStep  = 600
+	streamThinkMaxDelay   = 180 * time.Millisecond
+)
+
 // pruneMessages keeps the message window manageable: all leading system messages,
 // the original user message, then only the last 6 assistant/user exchange pairs.
 // This prevents token explosion over long ReAct runs.
@@ -114,7 +119,6 @@ func pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionM
 	return pruned
 }
 
-
 var agentTools = map[AgentID][]string{
 	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "store_memory", "retrieve_memory", "browser_view", "browser_run_js", "browser_close"},
 	AgentAthena:     {"delegate"},
@@ -126,29 +130,29 @@ var agentTools = map[AgentID][]string{
 }
 
 var toolDescs = map[string]string{
-	"create_file":  `{"tool":"create_file","path":"<file>","content":"<text>"} — create new file`,
-	"write_file":   `{"tool":"write_file","path":"<file>","content":"<text>"} — overwrite file`,
-	"append_file":  `{"tool":"append_file","path":"<file>","content":"<text>"} — append to file`,
-	"read_file":    `{"tool":"read_file","path":"<file>"} — read file contents`,
-	"edit_file":    `{"tool":"edit_file","path":"<file>","old_string":"<old>","new_string":"<new>"} — find & replace in file`,
-	"mkdir":        `{"tool":"mkdir","path":"<dir>"} — create directory`,
-	"delete_file":  `{"tool":"delete_file","path":"<file>"} — delete a file`,
-	"run_file":     `{"tool":"run_file","path":"<file>"} — run a script/program`,
-	"run_cmd":      `{"tool":"run_cmd","command":"<shell command>"} — run terminal command`,
-	"list_dir":     `{"tool":"list_dir","path":"<dir>"} — list directory contents`,
-	"web_search":   `{"tool":"web_search","query":"<search query>"} — search the web`,
-	"fetch_url":    `{"tool":"fetch_url","url":"<url>"} — fetch page content`,
-	"npm_search":   `{"tool":"npm_search","query":"<pkg>"} — search npm registry`,
-	"pip_search":   `{"tool":"pip_search","query":"<pkg>"} — search PyPI registry`,
-	"cargo_search": `{"tool":"cargo_search","query":"<crate>"} — search crates.io`,
-	"go_search":    `{"tool":"go_search","query":"<module>"} — search Go modules`,
-	"store_memory":    `{"tool":"store_memory","key":"<key>","content":"<value>"} — persist a value across steps`,
-	"retrieve_memory": `{"tool":"retrieve_memory","key":"<key>"} — retrieve a previously stored value`,
-	"delegate":        `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<instructions>"} — delegate to sub-agent`,
-	"move_file":    `{"tool":"move_file","src":"<src>","dst":"<dst>"} — move/rename file`,
-	"copy_file":    `{"tool":"copy_file","src":"<src>","dst":"<dst>"} — copy file`,
-	"tree":         `{"tool":"tree","path":"<dir>"} — recursive directory tree`,
-	"glob_search":  `{"tool":"glob_search","pattern":"<glob>"} — find files by pattern`,
+	"create_file":             `{"tool":"create_file","path":"<file>","content":"<text>"} — create new file`,
+	"write_file":              `{"tool":"write_file","path":"<file>","content":"<text>"} — overwrite file`,
+	"append_file":             `{"tool":"append_file","path":"<file>","content":"<text>"} — append to file`,
+	"read_file":               `{"tool":"read_file","path":"<file>"} — read file contents`,
+	"edit_file":               `{"tool":"edit_file","path":"<file>","old_string":"<old>","new_string":"<new>"} — find & replace in file`,
+	"mkdir":                   `{"tool":"mkdir","path":"<dir>"} — create directory`,
+	"delete_file":             `{"tool":"delete_file","path":"<file>"} — delete a file`,
+	"run_file":                `{"tool":"run_file","path":"<file>"} — run a script/program`,
+	"run_cmd":                 `{"tool":"run_cmd","command":"<shell command>"} — run terminal command`,
+	"list_dir":                `{"tool":"list_dir","path":"<dir>"} — list directory contents`,
+	"web_search":              `{"tool":"web_search","query":"<search query>"} — search the web`,
+	"fetch_url":               `{"tool":"fetch_url","url":"<url>"} — fetch page content`,
+	"npm_search":              `{"tool":"npm_search","query":"<pkg>"} — search npm registry`,
+	"pip_search":              `{"tool":"pip_search","query":"<pkg>"} — search PyPI registry`,
+	"cargo_search":            `{"tool":"cargo_search","query":"<crate>"} — search crates.io`,
+	"go_search":               `{"tool":"go_search","query":"<module>"} — search Go modules`,
+	"store_memory":            `{"tool":"store_memory","key":"<key>","content":"<value>"} — persist a value across steps`,
+	"retrieve_memory":         `{"tool":"retrieve_memory","key":"<key>"} — retrieve a previously stored value`,
+	"delegate":                `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<instructions>"} — delegate to sub-agent`,
+	"move_file":               `{"tool":"move_file","src":"<src>","dst":"<dst>"} — move/rename file`,
+	"copy_file":               `{"tool":"copy_file","src":"<src>","dst":"<dst>"} — copy file`,
+	"tree":                    `{"tool":"tree","path":"<dir>"} — recursive directory tree`,
+	"glob_search":             `{"tool":"glob_search","pattern":"<glob>"} — find files by pattern`,
 	"git_status":              `{"tool":"git_status"} — show working tree status`,
 	"git_diff":                `{"tool":"git_diff"} — show unstaged changes`,
 	"git_log":                 `{"tool":"git_log","count":10} — recent commit log`,
@@ -163,11 +167,11 @@ var toolDescs = map[string]string{
 	"github_status":           `{"tool":"github_status"} — check auth status`,
 	"github_login":            `{"tool":"github_login"} — OAuth device login`,
 	"github_logout":           `{"tool":"github_logout"} — remove credentials`,
-	"browser_view":   `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
-	"browser_run_js": `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
-	"browser_close":  `{"tool":"browser_close"} — closes the browser if open`,
-	"task_plan":      `{"tool":"task_plan","steps":["step 1","step 2",...]} — declare all planned steps upfront (REQUIRED at start of every task)`,
-	"complete_step":  `{"tool":"complete_step","step":"<step name>"} — mark a planned step as done`,
+	"browser_view":            `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
+	"browser_run_js":          `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
+	"browser_close":           `{"tool":"browser_close"} — closes the browser if open`,
+	"task_plan":               `{"tool":"task_plan","steps":["step 1","step 2",...]} — declare all planned steps upfront (REQUIRED at start of every task)`,
+	"complete_step":           `{"tool":"complete_step","step":"<step name>"} — mark a planned step as done`,
 }
 
 func reactSuffix(agent AgentID, mcpToolDescs string) string {
@@ -228,7 +232,6 @@ func parseStringSlice(args map[string]interface{}, key string) []string {
 	}
 	return nil
 }
-
 
 func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx string, images []string, mcpToolDescs string, executor ToolExecutor, ch chan<- tea.Msg) {
 	defer close(ch)
@@ -350,7 +353,6 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 	}
 }
 
-
 func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, agent AgentID, ch chan<- tea.Msg) (string, error) {
 	// Estimate input tokens before sending (4 chars ≈ 1 token).
 	inputEst := estimateTokens(messages)
@@ -378,6 +380,7 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 	var buf strings.Builder
 	var outChars int
 	var lastTokenSend int
+	lastThinkSend := time.Now()
 
 	for {
 		resp, err := stream.Recv()
@@ -410,8 +413,9 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 		buf.WriteString(chunk)
 		outChars += len(chunk)
 
-		// Send live token estimate every ~40 output chars.
-		if outChars-lastTokenSend >= 40 {
+		// Keep UI message volume bounded so mouse/key input is not queued behind
+		// hundreds of tiny token events during fast streams.
+		if outChars-lastTokenSend >= streamTokenUpdateStep {
 			ch <- TokenUpdateMsg{
 				Agent:        agent,
 				InputTokens:  inputEst,
@@ -420,9 +424,10 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 			lastTokenSend = outChars
 		}
 
-		if buf.Len() > 40 || strings.ContainsAny(chunk, "\n") {
+		if buf.Len() > 0 && (buf.Len() >= streamThinkChunkStep || time.Since(lastThinkSend) >= streamThinkMaxDelay) {
 			ch <- ThinkChunkMsg{Agent: agent, Chunk: buf.String()}
 			buf.Reset()
+			lastThinkSend = time.Now()
 		}
 	}
 
@@ -482,7 +487,6 @@ func estimateTokens(messages []openai.ChatCompletionMessage) int {
 	}
 	return total
 }
-
 
 type parsedAction struct {
 	tool string
@@ -571,7 +575,6 @@ func parseToolJSON(s string) *parsedAction {
 	delete(raw, "tool")
 	return &parsedAction{tool: tool, args: raw, raw: s}
 }
-
 
 func StartReact(client *openai.Client, agent AgentID, prompt string, ctx string, images []string, mcpToolDescs string, executor ToolExecutor) (chan tea.Msg, tea.Cmd) {
 	ch := make(chan tea.Msg, 32)

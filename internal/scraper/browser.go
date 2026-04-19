@@ -135,20 +135,34 @@ func BrowserRunJS(script string) (string, error) {
 		return "", fmt.Errorf("no active browser page, use browser_view first")
 	}
 
-	res, err := page.Eval(script)
+	res, err := proto.RuntimeEvaluate{
+		Expression:                  script,
+		ReturnByValue:               true,
+		AwaitPromise:                true,
+		UserGesture:                 true,
+		ReplMode:                    true,
+		AllowUnsafeEvalBlockedByCSP: true,
+	}.Call(page)
 	if err != nil {
 		return "", err
 	}
 	if res == nil {
 		return "", nil
 	}
-	if res.UnserializableValue != "" {
-		return string(res.UnserializableValue), nil
+	if res.ExceptionDetails != nil {
+		return "", &rod.EvalError{RuntimeExceptionDetails: res.ExceptionDetails}
 	}
-	if res.Value.Nil() {
+	if res.Result == nil {
+		return "", nil
+	}
+	obj := res.Result
+	if obj.UnserializableValue != "" {
+		return string(obj.UnserializableValue), nil
+	}
+	if obj.Value.Nil() {
 		return "undefined", nil
 	}
-	return res.Value.String(), nil
+	return obj.Value.String(), nil
 }
 
 func BrowserClose() string {
