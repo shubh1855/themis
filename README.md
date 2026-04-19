@@ -112,3 +112,21 @@ go build -o themis main.go
 ./themis
 ```
 *(Ensure valid API keys are configured globally within the TUI settings immediately post-initialization.)*
+
+---
+
+## Open Source & Research Acknowledgements
+
+Themis stands on the shoulders of brilliant open-source research and engineering. The orchestration mechanics and interface heavily integrate principles from the following works and modules:
+
+### Academic Research
+- **ReAct: Synergizing Reasoning and Acting in Language Models** ([Yao et al., 2022](https://arxiv.org/abs/2210.03629)): Defines the fundamental Thought, Action, and Observation recursive mechanics driving our autonomous agents.
+- **Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks** ([Lewis et al., 2020](https://arxiv.org/abs/2005.11401)): Serves as the mathematical basis for the workspace embedding loops indexing local file vectors.
+
+### Core Open-Source Modules
+- **[Bubble Tea](https://github.com/charmbracelet/bubbletea)** (Charm): Powers the highly resilient, event-driven Terminal User Interface (TUI) implementing The Elm Architecture natively.
+- **[Qdrant](https://qdrant.tech/)**: Operates as our persistent, dynamically provisioned local Vector Search Engine, empowering massive repository lookups efficiently.
+- **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** (Anthropic): Standardized RPC specifications natively embedded to hook up external isolated toolkits securely.
+- **[go-rod](https://github.com/go-rod/rod)**: A robust browser automation driver heavily utilized by our QA and testing agents for DOM scraping and iterative visual verification matrices.
+- **[SQLite (modernc.org)](https://pkg.go.dev/modernc.org/sqlite)**: CGO-free relational database persistence ensuring absolute cross-platform binary compilation of local memory loops.
+- **[go-openai](https://github.com/sashabaranov/go-openai)**: The underlying bridge routing strict schema instructions across inference engines interoperably.
