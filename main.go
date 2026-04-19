@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -695,28 +694,10 @@ func (m *model) renderLiveThinkBlock() string {
 	badge := ui.AgentStyle(string(agent)).Render(llm.AgentEmoji(agent) + " " + string(agent))
 	header := badge + " " + ui.ThinkStyle.Render("thinking...")
 	body := m.thinkStr
-	if m.thinkTruncated {
-		body = "[older thinking omitted to keep scrolling responsive]\n" + body
-	}
 	if strings.TrimSpace(body) == "" {
 		return header
 	}
 	return header + "\n" + ui.ThinkStyle.Render(body)
-}
-
-func appendBounded(base, chunk string, maxBytes int) (string, bool) {
-	if chunk == "" || maxBytes <= 0 {
-		return base, false
-	}
-	combined := base + chunk
-	if len(combined) <= maxBytes {
-		return combined, false
-	}
-	start := len(combined) - maxBytes
-	for start < len(combined) && !utf8.RuneStart(combined[start]) {
-		start++
-	}
-	return combined[start:], true
 }
 
 func (m *model) resizeView() {
@@ -775,11 +756,8 @@ func (m *model) appendToThink(chunk string) {
 	clean = strings.ReplaceAll(clean, "THOUGHT :", "")
 	clean = strings.ReplaceAll(clean, "ACTION:", "")
 	clean = strings.ReplaceAll(clean, "ACTION :", "")
-	var truncated bool
-	m.thinkStr, truncated = appendBounded(m.thinkStr, clean, maxThinkDisplayBytes)
-	if truncated {
-		m.thinkTruncated = true
-	}
+
+	m.thinkStr += clean
 	m.thinkDirty = true
 	m.updateViewport()
 }
@@ -1009,7 +987,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseButtonWheelUp:
 			switch m.viewMode {
 			case ViewChat:
-				m.syncViewportIfNeeded(true)
 				m.viewport.LineUp(2)
 			case ViewDashboard:
 				m.dashCursor = moveIndex(m.dashCursor, -1, len(m.dashItems))
@@ -1022,7 +999,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseButtonWheelDown:
 			switch m.viewMode {
 			case ViewChat:
-				m.syncViewportIfNeeded(true)
 				m.viewport.LineDown(2)
 			case ViewDashboard:
 				m.dashCursor = moveIndex(m.dashCursor, 1, len(m.dashItems))
