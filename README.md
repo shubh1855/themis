@@ -5,7 +5,9 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey.svg)](https://pkg.go.dev/github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-<video src="images/demo.mp4" controls="controls" muted="muted" width="100%"></video>
+https://github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/raw/main/images/demo.mp4
+
+> **Note:** If the video does not load automatically, [click here to view the demo video](https://github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/raw/main/images/demo.mp4).
 
 Themis is a highly autonomous command-line application that merges a Terminal User Interface (TUI) with an advanced multi-agent Language Model backend. Operating on a ReAct architecture, Themis functions as an autonomous pair programmer—capable of performing deep codebase searches, executing processes, implementing features, resolving errors, and managing the terminal environment directly.
 
