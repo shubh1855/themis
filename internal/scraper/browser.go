@@ -239,8 +239,10 @@ func BrowserScreenshot(path string) (string, error) {
 
 func injectVirtualCursor(page *rod.Page) {
 	script := `() => {
-		if (document.getElementById('themis-cursor')) return;
-		const cursor = document.createElement('div');
+		const init = () => {
+			if (!document.body) { requestAnimationFrame(init); return; }
+			if (document.getElementById('themis-cursor')) return;
+			const cursor = document.createElement('div');
 		cursor.id = 'themis-cursor';
 		cursor.style.width = '20px';
 		cursor.style.height = '20px';
@@ -282,6 +284,8 @@ func injectVirtualCursor(page *rod.Page) {
 			});
 			setTimeout(() => ripple.remove(), 400);
 		}, true);
+		};
+		init();
 	}`
 	_, _ = page.EvalOnNewDocument(script)
 	_, _ = page.Eval(script)
@@ -304,18 +308,20 @@ func BrowserHighlight(selector string) (string, error) {
 		el.style.outlineOffset = "2px";
 		el.style.boxShadow = "0 0 15px #00F0FF";
 		el.style.transition = "all 0.3s ease";
+		
 		const label = document.createElement('div');
 		label.innerText = 'THEMIS FOCUS';
-		label.style.cssText = 'position:absolute; background:#00F0FF; color:#000; font-size:10px; font-weight:bold; padding:2px 4px; top:-20px; left:0; z-index:999999; border-radius:2px;';
+		const rect = el.getBoundingClientRect();
+		label.style.cssText = 'position:fixed; background:#00F0FF; color:#000; font-size:10px; font-weight:bold; padding:2px 4px; z-index:2147483647; border-radius:2px; top:' + Math.max(0, rect.top - 20) + 'px; left:' + rect.left + 'px;';
 		label.className = 'themis-focus-label';
-		el.appendChild(label);
+		document.body.appendChild(label);
+		
 		setTimeout(() => {
 			el.style.outline = "";
 			el.style.outlineOffset = "";
 			el.style.boxShadow = "";
 			el.style.transition = "";
-			const lbl = el.querySelector('.themis-focus-label');
-			if (lbl) lbl.remove();
+			if (label.parentNode) label.remove();
 		}, 800);
 	}`)
 	if err != nil {
@@ -390,6 +396,10 @@ func BrowserType(selector, text string) (string, error) {
 	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return "", fmt.Errorf("click focus failed: %w", err)
 	}
+
+	_ = el.SelectAllText()
+	_ = page.Keyboard.Type('\b')
+	time.Sleep(100 * time.Millisecond)
 
 	for _, c := range text {
 		time.Sleep(time.Duration(40 + (c % 80)) * time.Millisecond)
@@ -468,15 +478,18 @@ func BrowserScroll(direction string, amount int) (string, error) {
 	if page == nil {
 		return "", fmt.Errorf("no active browser page")
 	}
-	x, y := 0, 0
+	y := 0
 	if direction == "up" {
 		y = -amount
 	} else {
 		y = amount
 	}
-	if err := page.Mouse.Scroll(float64(x), float64(y), 1); err != nil {
+	
+	script := fmt.Sprintf("window.scrollBy({top: %d, behavior: 'smooth'})", y)
+	if _, err := page.Eval(script); err != nil {
 		return "", fmt.Errorf("scroll failed: %w", err)
 	}
+
 	time.Sleep(500 * time.Millisecond)
 	return fmt.Sprintf("Scrolled %s by %d px", direction, amount), nil
 }

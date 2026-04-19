@@ -834,7 +834,7 @@ func humanizeAction(tool string, args map[string]interface{}) string {
 	case "browser_view":
 		return fmt.Sprintf("[@] **Opening Browser Window:** `%v`", args["url"])
 	}
-	return fmt.Sprintf(" **Using Tool:** %s", tool)
+	return fmt.Sprintf("[>] **Using Tool:** %s", tool)
 }
 
 func humanizeReq(req tools.ToolRequest) string {
@@ -856,7 +856,7 @@ func humanizeReq(req tools.ToolRequest) string {
 	case "git_diff":
 		return "[?] **Checking Git Diff**"
 	default:
-		return fmt.Sprintf(" **Using Tool:** %s", req.Tool)
+		return fmt.Sprintf("[>] **Using Tool:** %s", req.Tool)
 	}
 }
 
