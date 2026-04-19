@@ -618,6 +618,14 @@ func buildDashItems(db *dbx.DB) []dashItem {
 	return items
 }
 
+type blinkMsg struct{}
+
+func blinkTick() tea.Cmd {
+	return tea.Tick(time.Millisecond*500, func(t time.Time) tea.Msg {
+		return blinkMsg{}
+	})
+}
+
 // ── initialModel ────────────────────────────────────────────────────────
 
 func initialModel() model {
@@ -765,15 +773,15 @@ func humanizeAction(tool string, args map[string]interface{}) string {
 		act := strings.TrimPrefix(tool, "mcp__filesystem__")
 		switch act {
 		case "write_file":
-			return fmt.Sprintf("📝 **MCP Writing file:** `%v`", args["path"])
+			return fmt.Sprintf("[W] **MCP Writing file:** `%v`", args["path"])
 		case "read_file":
-			return fmt.Sprintf("📄 **MCP Reading file:** `%v`", args["path"])
+			return fmt.Sprintf("[R] **MCP Reading file:** `%v`", args["path"])
 		case "list_directory":
-			return fmt.Sprintf("📂 **MCP Listing directory:** `%v`", args["path"])
+			return fmt.Sprintf("[L] **MCP Listing directory:** `%v`", args["path"])
 		case "search_files":
-			return fmt.Sprintf("🔍 **MCP Searching files:** `%v`", args["pattern"])
+			return fmt.Sprintf("[?] **MCP Searching files:** `%v`", args["pattern"])
 		case "get_file_info":
-			return fmt.Sprintf("ℹ️ **MCP File info:** `%v`", args["path"])
+			return fmt.Sprintf("[i] **MCP File info:** `%v`", args["path"])
 		}
 	}
 	switch tool {
@@ -786,33 +794,33 @@ func humanizeAction(tool string, args map[string]interface{}) string {
 		} else {
 			cmd = fmt.Sprintf("%v", args)
 		}
-		return fmt.Sprintf("💻 **Executing terminal command:** \n```bash\n%s\n```", cmd)
+		return fmt.Sprintf("[>] **Executing terminal command:** \n```bash\n%s\n```", cmd)
 	case "read_file":
-		return fmt.Sprintf("📄 **Reading file:** `%v`", args["path"])
+		return fmt.Sprintf("[R] **Reading file:** `%v`", args["path"])
 	case "write_file", "create_file":
-		return fmt.Sprintf("📝 **Writing to file:** `%v`", args["path"])
+		return fmt.Sprintf("[W] **Writing to file:** `%v`", args["path"])
 	case "edit_file":
-		return fmt.Sprintf("📝 **Editing file:** `%v`", args["path"])
+		return fmt.Sprintf("[W] **Editing file:** `%v`", args["path"])
 	case "git_commit":
-		return fmt.Sprintf("📦 **Git Commit:** `%v`", args["message"])
+		return fmt.Sprintf("[*] **Git Commit:** `%v`", args["message"])
 	case "git_push":
-		return "☁️ **Git Push**"
+		return "[^] **Git Push**"
 	case "git_status":
-		return "🔍 **Checking Git Status**"
+		return "[?] **Checking Git Status**"
 	case "git_diff":
-		return "🔍 **Checking Git Diff**"
+		return "[?] **Checking Git Diff**"
 	case "task_plan":
-		return "📋 **Constructing Task Plan**"
+		return "[#] **Constructing Task Plan**"
 	case "complete_step":
-		return fmt.Sprintf("✅ **Completed step:** `%v`", args["step"])
+		return fmt.Sprintf("[✓] **Completed step:** `%v`", args["step"])
 	case "web_search":
-		return fmt.Sprintf("🌐 **Searching Web:** `%v`", args["query"])
+		return fmt.Sprintf("[@] **Searching Web:** `%v`", args["query"])
 	case "fetch_url":
-		return fmt.Sprintf("📥 **Fetching URL:** `%v`", args["url"])
+		return fmt.Sprintf(" **Fetching URL:** `%v`", args["url"])
 	case "browser_screenshot":
-		return "📸 **Capturing Browser Screenshot (Visual QA)**"
+		return " **Capturing Browser Screenshot (Visual QA)**"
 	case "browser_click":
-		return fmt.Sprintf("🖱️ **Clicking element:** `%v`", args["selector"])
+		return fmt.Sprintf("️ **Clicking element:** `%v`", args["selector"])
 	case "browser_type":
 		return fmt.Sprintf("⌨️ **Typing into:** `%v`", args["selector"])
 	case "browser_scroll":
@@ -820,35 +828,35 @@ func humanizeAction(tool string, args map[string]interface{}) string {
 		if dir == nil {
 			dir = "down"
 		}
-		return fmt.Sprintf("📜 **Scrolling:** `%v`", dir)
+		return fmt.Sprintf(" **Scrolling:** `%v`", dir)
 	case "browser_run_js":
 		return "⚙️ **Running Javascript in Browser**"
 	case "browser_view":
-		return fmt.Sprintf("🌐 **Opening Browser Window:** `%v`", args["url"])
+		return fmt.Sprintf("[@] **Opening Browser Window:** `%v`", args["url"])
 	}
-	return fmt.Sprintf("🔧 **Using Tool:** %s", tool)
+	return fmt.Sprintf(" **Using Tool:** %s", tool)
 }
 
 func humanizeReq(req tools.ToolRequest) string {
 	switch req.Tool {
 	case "run_file", "run_cmd":
-		return fmt.Sprintf("💻 **Executing terminal command:** \n```bash\n%s\n```", req.Content)
+		return fmt.Sprintf("[>] **Executing terminal command:** \n```bash\n%s\n```", req.Content)
 	case "read_file":
-		return fmt.Sprintf("📄 **Reading file:** `%s`", req.Path)
+		return fmt.Sprintf("[R] **Reading file:** `%s`", req.Path)
 	case "write_file", "create_file":
-		return fmt.Sprintf("📝 **Writing to file:** `%s`", req.Path)
+		return fmt.Sprintf("[W] **Writing to file:** `%s`", req.Path)
 	case "edit_file":
-		return fmt.Sprintf("📝 **Editing file:** `%s`", req.Path)
+		return fmt.Sprintf("[W] **Editing file:** `%s`", req.Path)
 	case "git_commit":
-		return fmt.Sprintf("📦 **Git Commit:** `%s`", req.Message)
+		return fmt.Sprintf("[*] **Git Commit:** `%s`", req.Message)
 	case "git_push":
-		return "☁️ **Git Push**"
+		return "[^] **Git Push**"
 	case "git_status":
-		return "🔍 **Checking Git Status**"
+		return "[?] **Checking Git Status**"
 	case "git_diff":
-		return "🔍 **Checking Git Diff**"
+		return "[?] **Checking Git Diff**"
 	default:
-		return fmt.Sprintf("🔧 **Using Tool:** %s", req.Tool)
+		return fmt.Sprintf(" **Using Tool:** %s", req.Tool)
 	}
 }
 
@@ -991,8 +999,13 @@ func (m *model) resizeView() {
 	footerH := 5
 	if m.review != nil {
 		footerH = 4
-	} else if len(m.pendingImages) > 0 {
-		footerH++
+	} else {
+		if len(m.pendingImages) > 0 {
+			footerH++
+		}
+		if m.isRecording {
+			footerH++
+		}
 	}
 	overhead := 4 + footerH + 2 + len(m.suggestions)
 	h := m.height - overhead
@@ -1590,7 +1603,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// RE-SUBSCRIBE to the stream!
 		return m, llm.WaitReact(m.reactCh)
 
-		case transcriptionMsg:
+	case blinkMsg:
+		m.viewDirty = true
+		if m.isRecording {
+			return m, blinkTick()
+		}
+		return m, nil
+
+	case transcriptionMsg:
 		m.loading = false
 		if msg.err != nil {
 			m.pushOutput("STT Error: " + msg.err.Error())
@@ -1640,6 +1660,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !m.isRecording {
 					if err := audio.StartRecording("/tmp/voice.wav"); err == nil {
 						m.isRecording = true
+						return m, blinkTick()
 					} else {
 						m.pushOutput("Audio Error: " + err.Error())
 					}
@@ -2309,7 +2330,7 @@ func (m model) renderChat() string {
 			inputView = recStr + "\n" + inputView
 		}
 		if len(m.pendingImages) > 0 {
-			inputView += fmt.Sprintf("\n  📎 %d image(s) attached (ctrl+o to add more)", len(m.pendingImages))
+			inputView += fmt.Sprintf("\n  [+] %d image(s) attached (ctrl+o to add more)", len(m.pendingImages))
 		}
 		footer = ui.BorderStyle.Copy().Width(contentWidth(layoutW, ui.BorderStyle)).Render(inputView)
 	}
@@ -2391,7 +2412,7 @@ func renderToolResult(tool string, args map[string]interface{}, result string) s
 	// Diff coloring: git_diff results or any result that looks like unified diff.
 	if tool == "git_diff" || syntax.IsDiff(result) {
 		colored := syntax.ColorDiff(result)
-		return ui.ObservationStyle.Render("📋 "+tool) + "\n" + colored
+		return ui.ObservationStyle.Render("[#] "+tool) + "\n" + colored
 	}
 
 	// Syntax highlighting for file reads.
@@ -2404,22 +2425,22 @@ func renderToolResult(tool string, args map[string]interface{}, result string) s
 		}
 		if path != "" && looksLikeCode(path) {
 			highlighted := syntax.Highlight(result, path)
-			return ui.ObservationStyle.Render("📋 "+path) + "\n" + highlighted
+			return ui.ObservationStyle.Render("[#] "+path) + "\n" + highlighted
 		}
 	}
 
 	// MCP tool calls — show server name prominently.
 	if strings.HasPrefix(tool, "mcp__") {
 		parts := strings.SplitN(tool, "__", 3)
-		header := "📦 MCP"
+		header := "[*] MCP"
 		if len(parts) == 3 {
-			header = fmt.Sprintf("📦 MCP[%s] %s", parts[1], parts[2])
+			header = fmt.Sprintf("[*] MCP[%s] %s", parts[1], parts[2])
 		}
-		return ui.ObservationStyle.Render("📋 "+header) + "\n" +
+		return ui.ObservationStyle.Render("[#] "+header) + "\n" +
 			lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(truncate(result, 800))
 	}
 
-	return ui.ObservationStyle.Render("📋 " + truncate(result, 500))
+	return ui.ObservationStyle.Render("[#] " + truncate(result, 500))
 }
 
 func looksLikeCode(path string) bool {

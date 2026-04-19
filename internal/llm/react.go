@@ -130,10 +130,10 @@ func pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionM
 var agentTools = map[AgentID][]string{
 	AgentZeus:       {"delegate", "ask_user", "read_file", "list_dir", "web_search", "fetch_url", "store_memory", "retrieve_memory"},
 	AgentAthena:     {"delegate", "ask_user", "read_file", "write_file", "create_file", "list_dir", "tree", "glob_search", "web_search", "fetch_url", "run_cmd", "store_memory", "retrieve_memory"},
-	AgentHephaestus: {"delegate", "ask_user", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentApollo:     {"delegate", "ask_user", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentHermes:     {"delegate", "ask_user", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
-	AgentAres:       {"delegate", "ask_user", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "vercel_deploy", "vercel_list", "vercel_logs", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentHephaestus: {"delegate", "ask_user", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close", "browser_highlight", "browser_hover", "browser_inspect"},
+	AgentApollo:     {"delegate", "ask_user", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close", "browser_highlight", "browser_hover", "browser_inspect"},
+	AgentHermes:     {"delegate", "ask_user", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close", "browser_highlight", "browser_hover", "browser_inspect"},
+	AgentAres:       {"delegate", "ask_user", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "vercel_deploy", "vercel_list", "vercel_logs", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close", "browser_highlight", "browser_hover", "browser_inspect"},
 	AgentPrometheus: {"delegate", "ask_user", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", "git_checkout_new_branch", "git_add", "git_commit", "git_push", "git_create_pr", "git_clone", "git_init", "github_create_repo", "github_status", "github_login", "github_logout", "read_file", "list_dir", "run_cmd"},
 }
 
@@ -183,7 +183,10 @@ var toolDescs = map[string]string{
 
 	"browser_click":           `{"tool":"browser_click","selector":"<css_selector>"} — clicks element`,
 	"browser_type":            `{"tool":"browser_type","selector":"<css_selector>","text":"<text>"} — types into input`,
-	"browser_scroll":          `{"tool":"browser_scroll","direction":"<up/down>","amount":500} — scrolls page`,
+	"browser_scroll":          `{"tool":"browser_scroll","direction":"<down|up>","amount":500} — scroll page`,
+	"browser_highlight":       `{"tool":"browser_highlight","selector":"<css>"} — highlights element with cyan overlay for the user to see`,
+	"browser_hover":           `{"tool":"browser_hover","selector":"<css>"} — smoothly moves mouse to element and takes screenshot`,
+	"browser_inspect":         `{"tool":"browser_inspect","selector":"<css/label>"} — reads accessibility tree + screenshot of element`,
 	"browser_screenshot":      `{"tool":"browser_screenshot"} — captures screenshot and parses any internal console errors`,
 	"browser_view":            `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
 	"browser_run_js":          `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,

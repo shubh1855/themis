@@ -45,18 +45,14 @@ func HandleGitHubStatus(ctx Context) models.ToolResponse {
 	if !auth.IsLoggedIn() {
 		return models.SuccessResponse(map[string]string{"status": "not authenticated"})
 	}
-	tok, err := auth.LoadToken()
-	if err != nil {
-		return models.ErrorResponsef("github_status: %v", err)
-	}
-	user := tok.Username
+
+	user := auth.GetUsername()
 	if user == "" {
 		user = "authenticated"
 	}
 	return models.SuccessResponse(map[string]string{
 		"status":   "authenticated",
 		"username": user,
-		"scope":    tok.Scope,
 	})
 }
 

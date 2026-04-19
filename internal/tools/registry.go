@@ -268,7 +268,7 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 
 	case "git_push":
 		if !auth.IsLoggedIn() {
-			return fail(fmt.Errorf("🔐 Not authenticated. Run github_login first"))
+			return fail(fmt.Errorf(" Not authenticated. Run github_login first"))
 		}
 		g := gitx.New(r.FS.Root)
 		status, _ := g.Status(bgCtx)
@@ -290,7 +290,7 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 
 	case "git_create_pr":
 		if !auth.IsLoggedIn() {
-			return fail(fmt.Errorf("🔐 Not authenticated. Run github_login first"))
+			return fail(fmt.Errorf(" Not authenticated. Run github_login first"))
 		}
 		if req.Title == "" {
 			return fail(fmt.Errorf("git_create_pr: missing 'title' field"))
@@ -317,14 +317,14 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 	// ── GitHub auth tools ─────────────────────────────────────────────────────
 	case "github_status":
 		if !auth.IsLoggedIn() {
-			return ok("❌ Not authenticated. Run github_login to sign in via GitHub OAuth.")
+			return ok("[x] Not authenticated. Run github_login to sign in via GitHub OAuth.")
 		}
 		tok, _ := auth.LoadToken()
 		user := tok.Username
 		if user == "" {
 			user = "authenticated user"
 		}
-		return ok(fmt.Sprintf("✅ Logged in as %s", user))
+		return ok(fmt.Sprintf("[✓] Logged in as %s", user))
 
 	case "github_login":
 		if auth.IsLoggedIn() {
@@ -347,13 +347,13 @@ func (r *Registry) Execute(req ToolRequest) ToolResult {
 		if user == "" {
 			user = "GitHub user"
 		}
-		return ok(fmt.Sprintf("✅ Logged in as %s — %s", user, instructions))
+		return ok(fmt.Sprintf("[✓] Logged in as %s — %s", user, instructions))
 
 	case "github_logout":
 		if err := auth.Logout(); err != nil {
 			return fail(err)
 		}
-		return ok("🔓 Logged out of GitHub")
+		return ok("[O] Logged out of GitHub")
 
 	default:
 		return fail(errors.New("unknown tool: " + req.Tool))

@@ -74,6 +74,8 @@ func BrowserView(url string) (string, error) {
 		}
 		page = p
 		
+		injectVirtualCursor(page)
+
 		go page.EachEvent(func(e *proto.RuntimeConsoleAPICalled) {
 			if e.Type == proto.RuntimeConsoleAPICalledTypeWarning || e.Type == proto.RuntimeConsoleAPICalledTypeError {
 				msg := ""
@@ -132,6 +134,9 @@ func BrowserOpen(url string) error {
 			return fmt.Errorf("open page: %w", err)
 		}
 		page = p
+
+		injectVirtualCursor(page)
+
 		go page.EachEvent(func(e *proto.RuntimeConsoleAPICalled) {
 			if e.Type == proto.RuntimeConsoleAPICalledTypeWarning || e.Type == proto.RuntimeConsoleAPICalledTypeError {
 				msg := ""
@@ -232,7 +237,114 @@ func BrowserScreenshot(path string) (string, error) {
 	return fmt.Sprintf("Screenshot saved to %s (IMAGE_OUTPUT_IMAGE).%s", path, errLogs), nil
 }
 
+func injectVirtualCursor(page *rod.Page) {
+	script := `() => {
+		if (document.getElementById('themis-cursor')) return;
+		const cursor = document.createElement('div');
+		cursor.id = 'themis-cursor';
+		cursor.style.width = '20px';
+		cursor.style.height = '20px';
+		cursor.style.background = 'rgba(0, 240, 255, 0.4)';
+		cursor.style.border = '2px solid #00F0FF';
+		cursor.style.borderRadius = '50%';
+		cursor.style.position = 'fixed';
+		cursor.style.zIndex = '2147483647';
+		cursor.style.pointerEvents = 'none';
+		cursor.style.boxShadow = '0 0 10px #00F0FF';
+		cursor.style.transition = 'top 0.05s linear, left 0.05s linear';
+		document.body.appendChild(cursor);
+		
+		document.addEventListener('mousemove', (e) => {
+			const c = document.getElementById('themis-cursor');
+			if (c) {
+				c.style.left = (e.clientX - 10) + 'px';
+				c.style.top = (e.clientY - 10) + 'px';
+			}
+		}, true);
+		
+		document.addEventListener('mousedown', (e) => {
+			const ripple = document.createElement('div');
+			ripple.style.position = 'fixed';
+			ripple.style.left = (e.clientX - 15) + 'px';
+			ripple.style.top = (e.clientY - 15) + 'px';
+			ripple.style.width = '30px';
+			ripple.style.height = '30px';
+			ripple.style.border = '2px solid #00F0FF';
+			ripple.style.borderRadius = '50%';
+			ripple.style.zIndex = '2147483646';
+			ripple.style.pointerEvents = 'none';
+			ripple.style.transition = 'all 0.4s ease-out';
+			document.body.appendChild(ripple);
+			
+			requestAnimationFrame(() => {
+				ripple.style.transform = 'scale(2.5)';
+				ripple.style.opacity = '0';
+			});
+			setTimeout(() => ripple.remove(), 400);
+		}, true);
+	}`
+	_, _ = page.EvalOnNewDocument(script)
+	_, _ = page.Eval(script)
+}
+
+func BrowserHighlight(selector string) (string, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	el, err := page.Element(selector)
+	if err != nil {
+		return "", fmt.Errorf("element not found: %w", err)
+	}
+
+	_, err = el.Eval(`() => {
+		const el = this;
+		el.style.outline = "4px solid #00F0FF";
+		el.style.outlineOffset = "2px";
+		el.style.boxShadow = "0 0 15px #00F0FF";
+		el.style.transition = "all 0.3s ease";
+		const label = document.createElement('div');
+		label.innerText = 'THEMIS FOCUS';
+		label.style.cssText = 'position:absolute; background:#00F0FF; color:#000; font-size:10px; font-weight:bold; padding:2px 4px; top:-20px; left:0; z-index:999999; border-radius:2px;';
+		label.className = 'themis-focus-label';
+		el.appendChild(label);
+		setTimeout(() => {
+			el.style.outline = "";
+			el.style.outlineOffset = "";
+			el.style.boxShadow = "";
+			el.style.transition = "";
+			const lbl = el.querySelector('.themis-focus-label');
+			if (lbl) lbl.remove();
+		}, 800);
+	}`)
+	if err != nil {
+		return "", fmt.Errorf("highlight failed: %w", err)
+	}
+	time.Sleep(600 * time.Millisecond) // Let the user see it
+	return "highlighted: " + selector, nil
+}
+
+func smoothGlide(el *rod.Element) error {
+	box, err := el.Shape()
+	if err != nil {
+		return err
+	}
+	bx := box.Box()
+	targetX := bx.X + bx.Width/2
+	targetY := bx.Y + bx.Height/2
+	if err := el.Page().Mouse.MoveLinear(proto.Point{X: targetX, Y: targetY}, 12); err != nil {
+		return err
+	}
+	time.Sleep(200 * time.Millisecond)
+	return nil
+}
+
 func BrowserClick(selector string) (string, error) {
+	// First highlight the element so the judge sees it.
+	// We call BrowserHighlight which acquires its own lock, so we don't lock here yet.
+	_, _ = BrowserHighlight(selector)
+
 	mu.Lock()
 	defer mu.Unlock()
 	if page == nil {
@@ -243,7 +355,12 @@ func BrowserClick(selector string) (string, error) {
 		return "", fmt.Errorf("element not found: %w", err)
 	}
 	_ = el.ScrollIntoView()
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	
+	if err := smoothGlide(el); err != nil {
+		return "", fmt.Errorf("mouse glide failed: %w", err)
+	}
+
 	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return "", fmt.Errorf("click failed: %w", err)
 	}
@@ -252,6 +369,8 @@ func BrowserClick(selector string) (string, error) {
 }
 
 func BrowserType(selector, text string) (string, error) {
+	_, _ = BrowserHighlight(selector)
+
 	mu.Lock()
 	defer mu.Unlock()
 	if page == nil {
@@ -262,10 +381,85 @@ func BrowserType(selector, text string) (string, error) {
 		return "", fmt.Errorf("element not found: %w", err)
 	}
 	_ = el.ScrollIntoView()
-	if err := el.Input(text); err != nil {
-		return "", fmt.Errorf("type failed: %w", err)
+	time.Sleep(100 * time.Millisecond)
+
+	if err := smoothGlide(el); err != nil {
+		return "", fmt.Errorf("mouse glide failed: %w", err)
 	}
+
+	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return "", fmt.Errorf("click focus failed: %w", err)
+	}
+
+	for _, c := range text {
+		time.Sleep(time.Duration(40 + (c % 80)) * time.Millisecond)
+		if err := page.InsertText(string(c)); err != nil {
+			return "", fmt.Errorf("type failed: %w", err)
+		}
+	}
+
 	return "Typed into " + selector, nil
+}
+
+func BrowserHover(selector string) (string, error) {
+	_, _ = BrowserHighlight(selector)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	el, err := page.Element(selector)
+	if err != nil {
+		return "", fmt.Errorf("element not found: %w", err)
+	}
+	_ = el.ScrollIntoView()
+	time.Sleep(100 * time.Millisecond)
+
+	if err := smoothGlide(el); err != nil {
+		return "", fmt.Errorf("mouse glide failed: %w", err)
+	}
+
+	time.Sleep(400 * time.Millisecond) // Let hover render
+	return "Hovered over " + selector, nil
+}
+
+func BrowserInspect(selector string) (string, error) {
+	_, _ = BrowserHighlight(selector)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	
+	// Optional: Get full AX Tree, but for simplicity we will just extract
+	// the accessible name, role and bounding box for the target element.
+	
+	el, err := page.Element(selector)
+	if err != nil {
+		return "", fmt.Errorf("element not found: %w", err)
+	}
+	
+	// A rudimentary fetch of name/role via accessibility node if supported easily,
+	// or standard properties.
+	node, err := el.Describe(1, true)
+	if err != nil {
+		return "", fmt.Errorf("describe element failed: %w", err)
+	}
+
+	bx, _ := el.Shape()
+	box := bx.Box()
+
+	desc := fmt.Sprintf("Element Inspector:\nTag: %s\nBox: X:%.1f Y:%.1f W:%.1f H:%.1f\n", 
+		node.NodeName, box.X, box.Y, box.Width, box.Height)
+
+	// Attempt to get text content or value
+	if val, err := el.Text(); err == nil && val != "" {
+		desc += "Text: " + val + "\n"
+	}
+	
+	return desc, nil
 }
 
 func BrowserScroll(direction string, amount int) (string, error) {

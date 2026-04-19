@@ -39,7 +39,7 @@ var defaultServers = []ServerConfig{
 		Name:    "puppeteer",
 		Command: "npx",
 		Args:    []string{"-y", "@modelcontextprotocol/server-puppeteer"},
-		Enabled: true,
+		Enabled: false, // Disabled: Themis uses its native go-rod Visual ACI tools instead
 	},
 	{
 		Name:    "time",

@@ -247,6 +247,27 @@ func NewReactExecutor(rootDir string, mcpMgr *mcp.Manager, promptFn PromptFn) fu
 			}
 			return scraper.BrowserScroll(direction, amount)
 
+		case "browser_highlight":
+			selector := models.ArgString(args, "selector")
+			if selector == "" {
+				return "", fmt.Errorf("missing 'selector'")
+			}
+			return scraper.BrowserHighlight(selector)
+
+		case "browser_hover":
+			selector := models.ArgString(args, "selector")
+			if selector == "" {
+				return "", fmt.Errorf("missing 'selector'")
+			}
+			return scraper.BrowserHover(selector)
+
+		case "browser_inspect":
+			selector := models.ArgString(args, "selector")
+			if selector == "" {
+				return "", fmt.Errorf("missing 'selector'")
+			}
+			return scraper.BrowserInspect(selector)
+
 		case "browser_close":
 			return scraper.BrowserClose(), nil
 

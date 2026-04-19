@@ -83,34 +83,13 @@ func ghCliToken() string {
 	return strings.TrimSpace(string(out))
 }
 
-// ghCliLogin runs `gh auth login` interactively.
-// This is the preferred login method as gh has a pre-registered OAuth App.
-func ghCliLogin() error {
-	cmd := exec.Command("gh", "auth", "login", "--web", "--hostname", "github.com")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
 // ── Login flow ────────────────────────────────────────────────────────────────
 
 // Login authenticates the user with GitHub.
-// It first tries `gh auth login` (interactive, uses gh's own OAuth App).
-// Returns the instructions to show the user and the access token once done.
+// It first checks if gh CLI is already authenticated. If not, it uses Device Flow.
 func Login(ctx context.Context) (instructions string, token string, err error) {
-	// Check if gh is available
-	if _, lookErr := exec.LookPath("gh"); lookErr == nil {
-		instructions = "Opening GitHub login via gh CLI (browser-based OAuth)..."
-		if loginErr := ghCliLogin(); loginErr != nil {
-			// gh login failed — try Device Flow as fallback
-			return loginDeviceFlow(ctx)
-		}
-		// gh auth login succeeded — get token and persist it
-		tok := ghCliToken()
-		if tok == "" {
-			return "", "", fmt.Errorf("auth: gh auth login succeeded but token is empty")
-		}
+	// Try to get token from existing gh cli session
+	if tok := ghCliToken(); tok != "" {
 		username := fetchGitHubUsername(tok)
 		stored := StoredToken{
 			AccessToken: tok,
@@ -122,10 +101,10 @@ func Login(ctx context.Context) (instructions string, token string, err error) {
 		_ = SaveToken(&stored)
 		os.Setenv("GH_TOKEN", tok)
 		os.Setenv("GITHUB_TOKEN", tok)
-		return instructions, tok, nil
+		return "Authenticated securely via existing gh CLI configuration.", tok, nil
 	}
 
-	// gh not installed — fall back to Device Flow
+	// Otherwise, fall back to Device Flow which is non-interactive
 	return loginDeviceFlow(ctx)
 }
 
