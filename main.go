@@ -739,6 +739,22 @@ func humanizeAction(tool string, args map[string]interface{}) string {
 		return fmt.Sprintf("🌐 **Searching Web:** `%v`", args["query"])
 	case "fetch_url":
 		return fmt.Sprintf("📥 **Fetching URL:** `%v`", args["url"])
+	case "browser_screenshot":
+		return "📸 **Capturing Browser Screenshot (Visual QA)**"
+	case "browser_click":
+		return fmt.Sprintf("🖱️ **Clicking element:** `%v`", args["selector"])
+	case "browser_type":
+		return fmt.Sprintf("⌨️ **Typing into:** `%v`", args["selector"])
+	case "browser_scroll":
+		dir := args["direction"]
+		if dir == nil {
+			dir = "down"
+		}
+		return fmt.Sprintf("📜 **Scrolling:** `%v`", dir)
+	case "browser_run_js":
+		return "⚙️ **Running Javascript in Browser**"
+	case "browser_view":
+		return fmt.Sprintf("🌐 **Opening Browser Window:** `%v`", args["url"])
 	}
 	return fmt.Sprintf("🔧 **Using Tool:** %s", tool)
 }

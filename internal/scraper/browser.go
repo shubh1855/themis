@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"strings"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -16,6 +17,7 @@ var (
 	browser *rod.Browser
 	page    *rod.Page
 	mu      sync.Mutex
+	consoleErrors []string
 )
 
 func hasDisplay() bool {
@@ -71,6 +73,19 @@ func BrowserView(url string) (string, error) {
 			return "", fmt.Errorf("open page: %w", err)
 		}
 		page = p
+		
+		go page.EachEvent(func(e *proto.RuntimeConsoleAPICalled) {
+			if e.Type == proto.RuntimeConsoleAPICalledTypeWarning || e.Type == proto.RuntimeConsoleAPICalledTypeError {
+				msg := ""
+				for _, arg := range e.Args {
+					msg += arg.Value.String() + " "
+				}
+				mu.Lock()
+				consoleErrors = append(consoleErrors, fmt.Sprintf("[%s]: %s", e.Type, msg))
+				mu.Unlock()
+			}
+		})()
+		
 	} else {
 		if err := page.Navigate(url); err != nil {
 			return "", fmt.Errorf("navigate: %w", err)
@@ -117,6 +132,17 @@ func BrowserOpen(url string) error {
 			return fmt.Errorf("open page: %w", err)
 		}
 		page = p
+		go page.EachEvent(func(e *proto.RuntimeConsoleAPICalled) {
+			if e.Type == proto.RuntimeConsoleAPICalledTypeWarning || e.Type == proto.RuntimeConsoleAPICalledTypeError {
+				msg := ""
+				for _, arg := range e.Args {
+					msg += arg.Value.String() + " "
+				}
+				mu.Lock()
+				consoleErrors = append(consoleErrors, fmt.Sprintf("[%s]: %s", e.Type, msg))
+				mu.Unlock()
+			}
+		})()
 	} else {
 		if err := page.Navigate(url); err != nil {
 			return fmt.Errorf("navigate: %w", err)
@@ -180,4 +206,83 @@ func BrowserClose() string {
 		return "browser closed"
 	}
 	return "browser was not open"
+}
+
+func BrowserScreenshot(path string) (string, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	data, err := page.Screenshot(true, nil)
+	if err != nil {
+		return "", fmt.Errorf("screenshot: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return "", fmt.Errorf("write screenshot: %w", err)
+	}
+	
+	// Collect stored errors
+	errLogs := ""
+	if len(consoleErrors) > 0 {
+		errLogs = "\n\nConsole Errors:\n" + strings.Join(consoleErrors, "\n")
+		consoleErrors = nil // clear after reporting
+	}
+	
+	return fmt.Sprintf("Screenshot saved to %s (IMAGE_OUTPUT_IMAGE).%s", path, errLogs), nil
+}
+
+func BrowserClick(selector string) (string, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	el, err := page.Element(selector)
+	if err != nil {
+		return "", fmt.Errorf("element not found: %w", err)
+	}
+	_ = el.ScrollIntoView()
+	time.Sleep(500 * time.Millisecond)
+	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return "", fmt.Errorf("click failed: %w", err)
+	}
+	time.Sleep(1 * time.Second) // wait for potential navigation
+	return "Clicked " + selector, nil
+}
+
+func BrowserType(selector, text string) (string, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	el, err := page.Element(selector)
+	if err != nil {
+		return "", fmt.Errorf("element not found: %w", err)
+	}
+	_ = el.ScrollIntoView()
+	if err := el.Input(text); err != nil {
+		return "", fmt.Errorf("type failed: %w", err)
+	}
+	return "Typed into " + selector, nil
+}
+
+func BrowserScroll(direction string, amount int) (string, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if page == nil {
+		return "", fmt.Errorf("no active browser page")
+	}
+	x, y := 0, 0
+	if direction == "up" {
+		y = -amount
+	} else {
+		y = amount
+	}
+	if err := page.Mouse.Scroll(float64(x), float64(y), 1); err != nil {
+		return "", fmt.Errorf("scroll failed: %w", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	return fmt.Sprintf("Scrolled %s by %d px", direction, amount), nil
 }

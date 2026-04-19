@@ -122,10 +122,10 @@ func pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionM
 var agentTools = map[AgentID][]string{
 	AgentZeus:       {"delegate", "read_file", "list_dir", "web_search", "fetch_url", "store_memory", "retrieve_memory"},
 	AgentAthena:     {"delegate", "read_file", "write_file", "create_file", "list_dir", "tree", "glob_search", "web_search", "fetch_url", "run_cmd", "store_memory", "retrieve_memory"},
-	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
-	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_run_js", "browser_close"},
-	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
-	AgentAres:       {"delegate", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_run_js", "browser_close"},
+	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
+	AgentAres:       {"delegate", "read_file", "edit_file", "append_file", "create_file", "write_file", "run_file", "run_cmd", "web_search", "fetch_url", "list_dir", "browser_view", "browser_click", "browser_type", "browser_scroll", "browser_screenshot", "browser_run_js", "browser_close"},
 	AgentPrometheus: {"delegate", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", "git_checkout_new_branch", "git_add", "git_commit", "git_push", "git_create_pr", "git_clone", "github_status", "github_login", "github_logout", "read_file", "list_dir", "run_cmd"},
 }
 
@@ -166,6 +166,11 @@ var toolDescs = map[string]string{
 	"github_status":           `{"tool":"github_status"} — check auth status`,
 	"github_login":            `{"tool":"github_login"} — OAuth device login`,
 	"github_logout":           `{"tool":"github_logout"} — remove credentials`,
+
+	"browser_click":           `{"tool":"browser_click","selector":"<css_selector>"} — clicks element`,
+	"browser_type":            `{"tool":"browser_type","selector":"<css_selector>","text":"<text>"} — types into input`,
+	"browser_scroll":          `{"tool":"browser_scroll","direction":"<up/down>","amount":500} — scrolls page`,
+	"browser_screenshot":      `{"tool":"browser_screenshot"} — captures screenshot and parses any internal console errors`,
 	"browser_view":            `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
 	"browser_run_js":          `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
 	"browser_close":           `{"tool":"browser_close"} — closes the browser if open`,
@@ -324,6 +329,19 @@ func RunReact(client *openai.Client, agent AgentID, userPrompt string, extraCtx 
 				result, execErr = executor(action.tool, action.args)
 				if execErr != nil {
 					result = "ERROR: " + execErr.Error()
+				} else {
+					if strings.Contains(result, "(IMAGE_OUTPUT_IMAGE)") {
+						// Extract path right before "(IMAGE_OUTPUT_IMAGE)"
+						parts := strings.Split(result, "(IMAGE_OUTPUT_IMAGE)")
+						left := parts[0]
+						words := strings.Fields(left)
+						if len(words) > 0 {
+							imgPath := words[len(words)-1] // 'path' should be the last contiguous word
+							images = append(images, imgPath)
+						}
+						// Strip the marker so the AI doesn't see it raw and get confused.
+						result = strings.ReplaceAll(result, "(IMAGE_OUTPUT_IMAGE)", "")
+					}
 				}
 			}
 			if len(result) > 4000 {

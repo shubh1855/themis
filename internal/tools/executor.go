@@ -208,6 +208,40 @@ func NewReactExecutor(rootDir string, mcpMgr *mcp.Manager) func(string, map[stri
 			}
 			return scraper.BrowserRunJS(script)
 
+		
+		case "browser_screenshot":
+			path := "/tmp/agent_screenshot_" + time.Now().Format("150405") + ".png"
+			if p := models.ArgString(args, "path"); p != "" {
+				path = p
+			}
+			return scraper.BrowserScreenshot(path)
+
+		case "browser_click":
+			selector := models.ArgString(args, "selector")
+			if selector == "" {
+				return "", fmt.Errorf("missing 'selector'")
+			}
+			return scraper.BrowserClick(selector)
+
+		case "browser_type":
+			selector := models.ArgString(args, "selector")
+			textToType := models.ArgString(args, "text")
+			if selector == "" || textToType == "" {
+				return "", fmt.Errorf("missing 'selector' or 'text'")
+			}
+			return scraper.BrowserType(selector, textToType)
+
+		case "browser_scroll":
+			direction := models.ArgString(args, "direction")
+			amount := 500
+			if a, ok := args["amount"].(float64); ok {
+				amount = int(a)
+			}
+			if direction == "" {
+				direction = "down"
+			}
+			return scraper.BrowserScroll(direction, amount)
+
 		case "browser_close":
 			return scraper.BrowserClose(), nil
 
