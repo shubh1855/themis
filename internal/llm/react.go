@@ -120,8 +120,8 @@ func pruneMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionM
 }
 
 var agentTools = map[AgentID][]string{
-	AgentZeus:       {"delegate", "read_file", "run_cmd", "web_search", "fetch_url", "list_dir", "store_memory", "retrieve_memory", "browser_view", "browser_run_js", "browser_close"},
-	AgentAthena:     {"delegate"},
+	AgentZeus:       {"delegate", "read_file", "list_dir", "web_search", "fetch_url", "store_memory", "retrieve_memory"},
+	AgentAthena:     {"delegate", "read_file", "write_file", "create_file", "list_dir", "tree", "glob_search", "web_search", "fetch_url", "run_cmd", "store_memory", "retrieve_memory"},
 	AgentHephaestus: {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_file", "run_cmd", "list_dir", "delete_file", "move_file", "copy_file", "tree", "glob_search", "store_memory", "retrieve_memory", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
 	AgentApollo:     {"delegate", "web_search", "fetch_url", "run_cmd", "read_file", "create_file", "write_file", "append_file", "npm_search", "pip_search", "cargo_search", "go_search", "browser_view", "browser_run_js", "browser_close"},
 	AgentHermes:     {"delegate", "create_file", "write_file", "append_file", "read_file", "edit_file", "mkdir", "run_cmd", "web_search", "fetch_url", "browser_view", "browser_run_js", "browser_close"},
@@ -148,7 +148,6 @@ var toolDescs = map[string]string{
 	"go_search":               `{"tool":"go_search","query":"<module>"} — search Go modules`,
 	"store_memory":            `{"tool":"store_memory","key":"<key>","content":"<value>"} — persist a value across steps`,
 	"retrieve_memory":         `{"tool":"retrieve_memory","key":"<key>"} — retrieve a previously stored value`,
-	"delegate":                `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<instructions>"} — delegate to sub-agent`,
 	"move_file":               `{"tool":"move_file","src":"<src>","dst":"<dst>"} — move/rename file`,
 	"copy_file":               `{"tool":"copy_file","src":"<src>","dst":"<dst>"} — copy file`,
 	"tree":                    `{"tool":"tree","path":"<dir>"} — recursive directory tree`,
@@ -172,6 +171,7 @@ var toolDescs = map[string]string{
 	"browser_close":           `{"tool":"browser_close"} — closes the browser if open`,
 	"task_plan":               `{"tool":"task_plan","steps":["step 1","step 2",...]} — declare all planned steps upfront (REQUIRED at start of every task)`,
 	"complete_step":           `{"tool":"complete_step","step":"<step name>"} — mark a planned step as done`,
+	"delegate":                `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<complete self-contained task instructions>"} — delegate work to a specialist sub-agent`,
 }
 
 func reactSuffix(agent AgentID, mcpToolDescs string) string {
@@ -534,9 +534,14 @@ func parseReact(text string) (thought string, action *parsedAction, answer strin
 			rest = strings.TrimSpace(rest)
 			act := parseToolJSON(rest)
 			if act != nil {
-				if act.tool == "delegate" {
+				// Accept both "delegate" and "delegate_task" as delegation triggers
+				if act.tool == "delegate" || act.tool == "delegate_task" {
 					agentName, _ := act.args["agent"].(string)
+					// Support both "task" and "content" field names for the task description
 					task, _ := act.args["task"].(string)
+					if task == "" {
+						task, _ = act.args["content"].(string)
+					}
 					ctx, _ := act.args["context"].(string)
 					target := resolveAgentName(agentName)
 					if target != "" && task != "" {
