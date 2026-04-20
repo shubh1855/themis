@@ -112,7 +112,7 @@ func callAgent(client *openai.Client, agent AgentID, userPrompt string, extraCon
 		Content: userPrompt,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	resp, err := client.CreateChatCompletion(
@@ -187,7 +187,7 @@ func AskAgent(client *openai.Client, agent AgentID, task string, zeusContext str
 
 		history = append(history, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: task})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
 
 		resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -301,7 +301,7 @@ func AskAgentWithResults(client *openai.Client, agent AgentID, results []string,
 
 		history = append(history, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: prompt})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
 
 		resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{

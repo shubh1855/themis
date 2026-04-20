@@ -297,7 +297,7 @@ func BrowserHighlight(selector string) (string, error) {
 	if page == nil {
 		return "", fmt.Errorf("no active browser page")
 	}
-	el, err := page.Element(selector)
+	el, err := page.Timeout(5 * time.Second).Element(selector)
 	if err != nil {
 		return "", fmt.Errorf("element not found: %w", err)
 	}
@@ -356,7 +356,7 @@ func BrowserClick(selector string) (string, error) {
 	if page == nil {
 		return "", fmt.Errorf("no active browser page")
 	}
-	el, err := page.Element(selector)
+	el, err := page.Timeout(5 * time.Second).Element(selector)
 	if err != nil {
 		return "", fmt.Errorf("element not found: %w", err)
 	}
@@ -382,7 +382,7 @@ func BrowserType(selector, text string) (string, error) {
 	if page == nil {
 		return "", fmt.Errorf("no active browser page")
 	}
-	el, err := page.Element(selector)
+	el, err := page.Timeout(5 * time.Second).Element(selector)
 	if err != nil {
 		return "", fmt.Errorf("element not found: %w", err)
 	}
@@ -397,8 +397,7 @@ func BrowserType(selector, text string) (string, error) {
 		return "", fmt.Errorf("click focus failed: %w", err)
 	}
 
-	_ = el.SelectAllText()
-	_ = page.Keyboard.Type('\b')
+	_ = el.Input("")
 	time.Sleep(100 * time.Millisecond)
 
 	for _, c := range text {
@@ -419,7 +418,7 @@ func BrowserHover(selector string) (string, error) {
 	if page == nil {
 		return "", fmt.Errorf("no active browser page")
 	}
-	el, err := page.Element(selector)
+	el, err := page.Timeout(5 * time.Second).Element(selector)
 	if err != nil {
 		return "", fmt.Errorf("element not found: %w", err)
 	}
@@ -446,7 +445,7 @@ func BrowserInspect(selector string) (string, error) {
 	// Optional: Get full AX Tree, but for simplicity we will just extract
 	// the accessible name, role and bounding box for the target element.
 	
-	el, err := page.Element(selector)
+	el, err := page.Timeout(5 * time.Second).Element(selector)
 	if err != nil {
 		return "", fmt.Errorf("element not found: %w", err)
 	}

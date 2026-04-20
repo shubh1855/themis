@@ -393,7 +393,7 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 	inputEst := estimateTokens(messages)
 	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: 0}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	stream, err := client.CreateChatCompletionStream(
@@ -483,7 +483,7 @@ func nonStreamCall(client *openai.Client, messages []openai.ChatCompletionMessag
 	inputEst := estimateTokens(messages)
 	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: 0}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	resp, err := client.CreateChatCompletion(
