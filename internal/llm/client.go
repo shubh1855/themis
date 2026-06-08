@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,7 +13,6 @@ import (
 
 	agents "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/prompt/agents"
 )
-
 
 type AgentID string
 
@@ -26,11 +26,45 @@ const (
 	AgentPrometheus AgentID = "Prometheus"
 )
 
-const reactModel = "google/gemma-4-31B-it"
+const DefaultReactModel = "google/gemma-4-31B-it"
 
-var CurrentModel = reactModel
+var (
+	modelMu    sync.RWMutex
+	reactModel = DefaultReactModel
+
+	clientMu     sync.RWMutex
+	activeClient *openai.Client
+)
+
+var CurrentModel = DefaultReactModel
 var CurrentAPIKey = ""
 
+func SetReactModel(m string) {
+	modelMu.Lock()
+	defer modelMu.Unlock()
+	if m != "" {
+		reactModel = m
+		CurrentModel = m
+	}
+}
+
+func GetReactModel() string {
+	modelMu.RLock()
+	defer modelMu.RUnlock()
+	return reactModel
+}
+
+func SetActiveClient(c *openai.Client) {
+	clientMu.Lock()
+	defer clientMu.Unlock()
+	activeClient = c
+}
+
+func GetActiveClient() *openai.Client {
+	clientMu.RLock()
+	defer clientMu.RUnlock()
+	return activeClient
+}
 
 var agentPrompts = map[AgentID]string{
 	AgentZeus:       agents.ZeusPrompt,
@@ -67,7 +101,9 @@ func NewClient(apiKey string) *openai.Client {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = "https://litellm-proxy-93ef.onrender.com/v1"
 	CurrentAPIKey = apiKey
-	return openai.NewClientWithConfig(cfg)
+	client := openai.NewClientWithConfig(cfg)
+	SetActiveClient(client)
+	return client
 }
 
 // ── Message types for orchestration ──────────────────────────────────────────

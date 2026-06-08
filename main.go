@@ -28,6 +28,7 @@ import (
 	"github.com/NimbleMarkets/ntcharts/barchart"
 	"github.com/NimbleMarkets/ntcharts/sparkline"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/appdir"
+	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/audio"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/dbx"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/llm"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/mcp"
@@ -35,7 +36,6 @@ import (
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/syntax"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tools"
 	apptty "github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/tty"
-	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/audio"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/ui"
 	"github.com/syn3rgy2026/UntrainedModels_Syn3rgy_SatyamUttamPandey/internal/worker"
 )
@@ -267,10 +267,17 @@ type model struct {
 	// ── Settings ──
 	settingsCursor int    // cursor in settings view (theme row index)
 	themeName      string // name of current theme key (saved to DB)
+	providerIdx    int
 	apiInput       textinput.Model
+	baseURLInput   textinput.Model
 	modelInput     textinput.Model
 	grokInput      textinput.Model
 	vercelInput    textinput.Model // Vercel token
+	ollamaOK       bool
+	ollamaChecked  bool
+	modelList      []string
+	modelListIdx   int
+	settingsError  string
 	isRecording    bool
 
 	// ── Agent prompt (ask_user tool) ──
@@ -362,8 +369,20 @@ type dbReadyMsg struct {
 	items       []dashItem
 	apiKey      string
 	modelName   string
+	providerCfg dbx.ProviderConfigRow
+	providerOK  bool
+	providerErr error
 	grokKey     string
 	vercelToken string
+}
+
+type OllamaHealthMsg struct {
+	Err error
+}
+
+type OllamaModelsMsg struct {
+	Models []string
+	Err    error
 }
 
 func initDB() tea.Msg {
@@ -391,7 +410,7 @@ func initDB() tea.Msg {
 	if themeName, ok, _ := db.GetSetting(ctx, "theme"); ok && themeName != "" {
 		applyTheme(ui.GetTheme(themeName))
 	}
-	
+
 	apiKey := os.Getenv("INFERX_API_KEY")
 	if apiKey == "" {
 		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
@@ -403,6 +422,16 @@ func initDB() tea.Msg {
 	modelName := "google/gemma-4-31B-it"
 	if dbModel, ok, _ := db.GetSetting(ctx, "llm_model"); ok && dbModel != "" {
 		modelName = dbModel
+	}
+
+	providerCfg, providerOK, providerErr := db.LoadProviderConfig(ctx)
+	if !providerOK || providerCfg.Provider == "" {
+		providerCfg = dbx.ProviderConfigRow{
+			Provider: "anthropic",
+			APIKey:   apiKey,
+			BaseURL:  "",
+			Model:    modelName,
+		}
 	}
 
 	grokKey := ""
@@ -417,7 +446,39 @@ func initDB() tea.Msg {
 	}
 
 	items := buildDashItems(db)
-	return dbReadyMsg{db: db, items: items, apiKey: apiKey, modelName: modelName, grokKey: grokKey, vercelToken: vercelToken}
+	return dbReadyMsg{
+		db:          db,
+		items:       items,
+		apiKey:      apiKey,
+		modelName:   modelName,
+		providerCfg: providerCfg,
+		providerOK:  providerOK,
+		providerErr: providerErr,
+		grokKey:     grokKey,
+		vercelToken: vercelToken,
+	}
+}
+
+func providerIndex(provider string) int {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return 1
+	case "ollama":
+		return 2
+	default:
+		return 0
+	}
+}
+
+func providerName(idx int) string {
+	switch idx {
+	case 1:
+		return "openai"
+	case 2:
+		return "ollama"
+	default:
+		return "anthropic"
+	}
 }
 
 // ── Qdrant init message ─────────────────────────────────────────────────
@@ -654,6 +715,12 @@ func initialModel() model {
 	apiIn.Placeholder = "sk-..."
 	apiIn.CharLimit = 200
 	apiIn.Width = 40
+	apiIn.EchoMode = textinput.EchoPassword
+
+	baseURLIn := textinput.New()
+	baseURLIn.Placeholder = "http://localhost:11434"
+	baseURLIn.CharLimit = 200
+	baseURLIn.Width = 40
 
 	modIn := textinput.New()
 	modIn.Placeholder = "google/gemma-4-31B-it"
@@ -686,6 +753,8 @@ func initialModel() model {
 		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
 	}
 	llmClient := llm.NewClient(apiKey)
+	llm.SetReactModel(llm.DefaultReactModel)
+	llm.SetActiveClient(llmClient)
 	mcpMgr := mcp.NewManager()
 
 	return model{
@@ -700,9 +769,10 @@ func initialModel() model {
 			{kind: "action", label: "＋  New Chat", desc: "Start a standalone chat session"},
 			{kind: "action", label: "⚙  MCP Servers", desc: "Manage Model Context Protocol servers (ctrl+p)"},
 		},
-		dashCursor:  0,
-		dashInput:   dashTA,
+		dashCursor:       0,
+		dashInput:        dashTA,
 		apiInput:         apiIn,
+		baseURLInput:     baseURLIn,
 		modelInput:       modIn,
 		grokInput:        grokIn,
 		vercelInput:      vercelIn,
@@ -712,14 +782,14 @@ func initialModel() model {
 		registry:         tools.NewRegistry(fs),
 		perms:            tools.NewPermissionManager(),
 		executor:         tools.NewReactExecutor(wd, mcpMgr, bridge.ask),
-		viewport:    vp,
-		input:       ta,
-		spinner:     sp,
-		help:        help.New(),
-		history:     []string{},
-		selectedSug: -1,
-		thinkIdx:    -1,
-		verboseMode: false, // quiet by default keeps scrolling responsive; ctrl+v shows full thinking
+		viewport:         vp,
+		input:            ta,
+		spinner:          sp,
+		help:             help.New(),
+		history:          []string{},
+		selectedSug:      -1,
+		thinkIdx:         -1,
+		verboseMode:      false, // quiet by default keeps scrolling responsive; ctrl+v shows full thinking
 		nonVerboseSpinner: func() spinner.Model {
 			s := spinner.New()
 			s.Spinner = spinner.Points
@@ -1227,6 +1297,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.db = msg.db
 		m.dashItems = msg.items
+		if msg.providerErr != nil {
+			m.settingsError = msg.providerErr.Error()
+		}
 		// Load saved theme name so settings view cursor is correct.
 		if m.db != nil {
 			if name, ok, _ := m.db.GetSetting(context.Background(), "theme"); ok && name != "" {
@@ -1241,6 +1314,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.modelName != "" {
 			m.modelInput.SetValue(msg.modelName)
 		}
+		if msg.providerCfg.Provider != "" {
+			m.providerIdx = providerIndex(msg.providerCfg.Provider)
+			if msg.providerCfg.APIKey != "" {
+				m.apiInput.SetValue(msg.providerCfg.APIKey)
+			}
+			if msg.providerCfg.BaseURL != "" {
+				m.baseURLInput.SetValue(msg.providerCfg.BaseURL)
+			}
+			if msg.providerCfg.Model != "" {
+				m.modelInput.SetValue(msg.providerCfg.Model)
+			}
+			client, err := llm.BuildClient(llm.ProviderConfig{
+				Provider: msg.providerCfg.Provider,
+				APIKey:   msg.providerCfg.APIKey,
+				BaseURL:  msg.providerCfg.BaseURL,
+				Model:    msg.providerCfg.Model,
+			})
+			if err != nil {
+				m.settingsError = err.Error()
+			} else {
+				m.client = client
+				llm.SetActiveClient(client)
+				llm.SetReactModel(msg.providerCfg.Model)
+				m.qClient = qdrant.NewClient("http://127.0.0.1:6333", client)
+			}
+		}
 		if msg.grokKey != "" {
 			m.grokInput.SetValue(msg.grokKey)
 		}
@@ -1253,6 +1352,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usageLogs = msg.logs
 		m.usageTotalIn = msg.totalIn
 		m.usageTotalOut = msg.totalOut
+		return m, nil
+
+	case OllamaHealthMsg:
+		m.ollamaChecked = true
+		m.ollamaOK = msg.Err == nil
+		if msg.Err != nil {
+			m.settingsError = msg.Err.Error()
+		} else if m.settingsError != "saved" {
+			m.settingsError = ""
+		}
+		return m, nil
+
+	case OllamaModelsMsg:
+		if msg.Err != nil {
+			m.settingsError = msg.Err.Error()
+			return m, nil
+		}
+		m.modelList = msg.Models
+		m.modelListIdx = moveIndex(m.modelListIdx, 0, len(m.modelList))
+		if len(m.modelList) > 0 && m.modelInput.Value() == "" {
+			m.modelInput.SetValue(m.modelList[m.modelListIdx])
+		}
+		m.settingsError = ""
 		return m, nil
 
 	case qdrantReadyMsg:
@@ -1298,7 +1420,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ViewDashboard:
 				m.dashCursor = moveIndex(m.dashCursor, -1, len(m.dashItems))
 			case ViewSettings:
-				m.settingsCursor = moveIndex(m.settingsCursor, -1, len(ui.ThemeOrder))
+				m.settingsCursor = moveIndex(m.settingsCursor, -1, settingsMaxCursor()+1)
 			case ViewMCP:
 				m.mcpCursor = moveIndex(m.mcpCursor, -1, len(m.mcpManager.Statuses()))
 			}
@@ -1311,7 +1433,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case ViewDashboard:
 				m.dashCursor = moveIndex(m.dashCursor, 1, len(m.dashItems))
 			case ViewSettings:
-				m.settingsCursor = moveIndex(m.settingsCursor, 1, len(ui.ThemeOrder))
+				m.settingsCursor = moveIndex(m.settingsCursor, 1, settingsMaxCursor()+1)
 			case ViewMCP:
 				m.mcpCursor = moveIndex(m.mcpCursor, 1, len(m.mcpManager.Statuses()))
 			}
@@ -1369,7 +1491,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeTaskID = m.taskGraph.Root.ID
 			}
 
-			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
+			ch, reactCmd := llm.StartReact(llm.GetActiveClient(), llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
 			m.reactCh = ch
 			m.bridge.setChannel(ch)
 			return m, tea.Batch(reactCmd, m.spinner.Tick)
@@ -1439,7 +1561,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeTaskID = childID
 
 		m.activeAgent = msg.Target
-		ch, reactCmd := llm.StartReact(m.client, msg.Target, msg.Task, msg.Context, nil, m.mcpToolDescs(), m.executor)
+		ch, reactCmd := llm.StartReact(llm.GetActiveClient(), msg.Target, msg.Task, msg.Context, nil, m.mcpToolDescs(), m.executor)
 		m.reactCh = ch
 		m.bridge.setChannel(ch)
 		return m, tea.Batch(reactCmd, m.spinner.Tick)
@@ -1505,7 +1627,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeTaskID = m.taskGraph.Root.ID
 			}
 
-			ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
+			ch, reactCmd := llm.StartReact(llm.GetActiveClient(), llm.AgentZeus, prompt, m.buildChatContext(), nil, m.mcpToolDescs(), m.executor)
 			m.reactCh = ch
 			m.bridge.setChannel(ch)
 			return m, tea.Batch(reactCmd, m.spinner.Tick)
@@ -1545,7 +1667,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		childID := m.taskGraph.AddChild(m.activeTaskID, "Zeus", "re-planning after step limit")
 		m.taskGraph.SetStatus(childID, ui.TaskRunning)
 		m.activeTaskID = childID
-		ch, reactCmd := llm.StartReact(m.client, llm.AgentZeus, recoveryPrompt, ctx, nil, m.mcpToolDescs(), m.executor)
+		ch, reactCmd := llm.StartReact(llm.GetActiveClient(), llm.AgentZeus, recoveryPrompt, ctx, nil, m.mcpToolDescs(), m.executor)
 		m.reactCh = ch
 		m.bridge.setChannel(ch)
 		m.loading = true
@@ -1651,11 +1773,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Set cursor to current theme index.
 			for i, name := range ui.ThemeOrder {
 				if name == m.themeName {
-					m.settingsCursor = i + 4
+					m.settingsCursor = settingsThemeStart + i
 				}
 			}
 			return m, m.loadUsageData()
-				case "ctrl+r":
+		case "ctrl+r":
 			if m.viewMode == ViewChat {
 				if !m.isRecording {
 					if err := audio.StartRecording("/tmp/voice.wav"); err == nil {
@@ -1707,7 +1829,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── Settings view ──
 		if m.viewMode == ViewSettings {
-			return m.updateSettings(msg)
+			return m.updateProviderSettings(msg)
 		}
 
 		// ── Dashboard mode ──
@@ -1891,7 +2013,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					combinedCtx := strings.Join(ctxParts, "\n\n")
-					go llm.RunReact(m.client, llm.AgentZeus, ep, combinedCtx, imgs, m.mcpToolDescs(), m.executor, ch)
+					go llm.RunReact(llm.GetActiveClient(), llm.AgentZeus, ep, combinedCtx, imgs, m.mcpToolDescs(), m.executor, ch)
 					return nil
 				},
 			)
@@ -2035,7 +2157,7 @@ func (m model) View() string {
 	case ViewMCP:
 		return m.renderMCPView()
 	case ViewSettings:
-		return m.renderSettings()
+		return m.renderProviderSettings()
 	case ViewAgentPrompt:
 		return m.renderAgentPrompt()
 	default:
@@ -2501,6 +2623,315 @@ func renderMarkdown(content string) string {
 
 // ── Settings view ───────────────────────────────────────────────────────
 
+const settingsThemeStart = 5
+
+func settingsMaxCursor() int {
+	return settingsThemeStart + len(ui.ThemeOrder) - 1
+}
+
+func ollamaHealthCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		return OllamaHealthMsg{Err: llm.OllamaHealth(ctx, baseURL)}
+	}
+}
+
+func ollamaModelsCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		models, err := llm.ListOllamaModels(ctx, baseURL)
+		return OllamaModelsMsg{Models: models, Err: err}
+	}
+}
+
+func (m model) providerConfigRow() dbx.ProviderConfigRow {
+	provider := providerName(m.providerIdx)
+	cfg := dbx.ProviderConfigRow{
+		Provider: provider,
+		APIKey:   m.apiInput.Value(),
+		Model:    m.modelInput.Value(),
+	}
+	if provider == "ollama" {
+		cfg.APIKey = ""
+		cfg.BaseURL = m.baseURLInput.Value()
+	}
+	return cfg
+}
+
+func (m model) saveProviderConfig() (model, tea.Cmd) {
+	cfg := m.providerConfigRow()
+	client, err := llm.BuildClient(llm.ProviderConfig{
+		Provider: cfg.Provider,
+		APIKey:   cfg.APIKey,
+		BaseURL:  cfg.BaseURL,
+		Model:    cfg.Model,
+	})
+	if err != nil {
+		m.settingsError = err.Error()
+		return m, nil
+	}
+	if m.db != nil {
+		if err := m.db.SaveProviderConfig(context.Background(), cfg); err != nil {
+			m.settingsError = err.Error()
+			return m, nil
+		}
+		_ = m.db.SetSetting(context.Background(), "api_key", cfg.APIKey)
+		_ = m.db.SetSetting(context.Background(), "llm_model", cfg.Model)
+	}
+	m.client = client
+	llm.SetActiveClient(client)
+	llm.SetReactModel(cfg.Model)
+	llm.CurrentAPIKey = cfg.APIKey
+	m.qClient = qdrant.NewClient("http://127.0.0.1:6333", client)
+	m.settingsError = "saved"
+	if cfg.Provider == "ollama" {
+		return m, ollamaHealthCmd(cfg.BaseURL)
+	}
+	return m, nil
+}
+
+func (m model) updateProviderSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var cmds []tea.Cmd
+
+	switch msg.String() {
+	case "esc", "ctrl+s":
+		m.viewMode = ViewDashboard
+		m.apiInput.Blur()
+		m.baseURLInput.Blur()
+		m.modelInput.Blur()
+		m.grokInput.Blur()
+		m.vercelInput.Blur()
+		return m, nil
+	case "ctrl+w":
+		return m.saveProviderConfig()
+	case "ctrl+r":
+		if m.providerIdx == 2 {
+			return m, tea.Batch(ollamaHealthCmd(m.baseURLInput.Value()), ollamaModelsCmd(m.baseURLInput.Value()))
+		}
+	case "ctrl+n":
+		if m.providerIdx == 2 && len(m.modelList) > 0 {
+			m.modelListIdx = moveIndex(m.modelListIdx, 1, len(m.modelList))
+			m.modelInput.SetValue(m.modelList[m.modelListIdx])
+			return m, nil
+		}
+	case "ctrl+b":
+		if m.providerIdx == 2 && len(m.modelList) > 0 {
+			m.modelListIdx = moveIndex(m.modelListIdx, -1, len(m.modelList))
+			m.modelInput.SetValue(m.modelList[m.modelListIdx])
+			return m, nil
+		}
+	case "up", "shift+tab":
+		m.settingsCursor = moveIndex(m.settingsCursor, -1, settingsMaxCursor()+1)
+	case "down", "tab":
+		m.settingsCursor = moveIndex(m.settingsCursor, 1, settingsMaxCursor()+1)
+	case "left":
+		if m.settingsCursor == 0 {
+			m.providerIdx = moveIndex(m.providerIdx, -1, 3)
+			m.settingsError = ""
+			if m.providerIdx == 2 {
+				cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+			}
+		}
+	case "right", " ":
+		if m.settingsCursor == 0 {
+			m.providerIdx = (m.providerIdx + 1) % 3
+			m.settingsError = ""
+			if m.providerIdx == 2 {
+				cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+			}
+		}
+	case "enter":
+		if m.settingsCursor == 0 {
+			m.providerIdx = (m.providerIdx + 1) % 3
+			m.settingsError = ""
+			if m.providerIdx == 2 {
+				cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+			}
+		} else if m.settingsCursor == 1 && m.providerIdx == 2 {
+			cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+		} else if m.settingsCursor >= settingsThemeStart {
+			themeIdx := m.settingsCursor - settingsThemeStart
+			if themeIdx < len(ui.ThemeOrder) {
+				name := ui.ThemeOrder[themeIdx]
+				m.themeName = name
+				applyTheme(ui.GetTheme(name))
+				if m.db != nil {
+					_ = m.db.SetSetting(context.Background(), "theme", name)
+				}
+			}
+		}
+	}
+
+	m.apiInput.Blur()
+	m.baseURLInput.Blur()
+	m.modelInput.Blur()
+	m.grokInput.Blur()
+	m.vercelInput.Blur()
+
+	switch m.settingsCursor {
+	case 1:
+		if m.providerIdx == 2 {
+			m.baseURLInput.Focus()
+			m.baseURLInput, cmd = m.baseURLInput.Update(msg)
+		} else {
+			m.apiInput.Focus()
+			m.apiInput, cmd = m.apiInput.Update(msg)
+		}
+		cmds = append(cmds, cmd)
+	case 2:
+		m.modelInput.Focus()
+		m.modelInput, cmd = m.modelInput.Update(msg)
+		cmds = append(cmds, cmd)
+	case 3:
+		m.grokInput.Focus()
+		m.grokInput, cmd = m.grokInput.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.db != nil {
+			_ = m.db.SetSetting(context.Background(), "grok_key", m.grokInput.Value())
+		}
+	case 4:
+		m.vercelInput.Focus()
+		m.vercelInput, cmd = m.vercelInput.Update(msg)
+		cmds = append(cmds, cmd)
+		val := m.vercelInput.Value()
+		if m.db != nil {
+			_ = m.db.SetSetting(context.Background(), "vercel_token", val)
+		}
+		_ = os.Setenv("VERCEL_TOKEN", val)
+	default:
+		if msg.String() == "k" {
+			m.settingsCursor = moveIndex(m.settingsCursor, -1, settingsMaxCursor()+1)
+		} else if msg.String() == "j" {
+			m.settingsCursor = moveIndex(m.settingsCursor, 1, settingsMaxCursor()+1)
+		}
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m model) renderProviderSettings() string {
+	w := m.width - 4
+	if w < 40 {
+		w = 40
+	}
+	t := ui.GetTheme(m.themeName)
+	if m.themeName == "" {
+		t = ui.GetTheme("default")
+	}
+	accent := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	sectionStyle := lipgloss.NewStyle().Foreground(t.Accent).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(t.Dim)
+	activeStyle := lipgloss.NewStyle().Foreground(t.Primary).Bold(true)
+	errStyle := lipgloss.NewStyle().Foreground(t.Danger).Bold(true)
+	okStyle := lipgloss.NewStyle().Foreground(t.Success).Bold(true)
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.Secondary).
+		Padding(1, 2).
+		Width(w)
+
+	cursor := func(row int) string {
+		if m.settingsCursor == row {
+			return activeStyle.Render("> ")
+		}
+		return "  "
+	}
+	providers := []string{"Anthropic", "OpenAI", "Ollama"}
+	var tabs []string
+	for i, p := range providers {
+		label := " " + p + " "
+		if i == m.providerIdx {
+			tabs = append(tabs, activeStyle.Copy().Underline(true).Render(label))
+		} else {
+			tabs = append(tabs, dimStyle.Render(label))
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(accent.Render("Settings") + "\n\n")
+	sb.WriteString(sectionStyle.Render("-- LLM Provider") + "\n\n")
+	sb.WriteString(cursor(0) + strings.Join(tabs, "  ") + "\n")
+	if m.providerIdx == 2 {
+		sb.WriteString(fmt.Sprintf("%s%-10s %s\n", cursor(1), "Base URL:", m.baseURLInput.View()))
+		if m.ollamaChecked {
+			if m.ollamaOK {
+				sb.WriteString("  " + okStyle.Render("connected") + "\n")
+			} else {
+				sb.WriteString("  " + errStyle.Render("unreachable - run: ollama serve") + "\n")
+			}
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("%s%-10s %s\n", cursor(1), "API Key:", m.apiInput.View()))
+	}
+	sb.WriteString(fmt.Sprintf("%s%-10s %s\n", cursor(2), "Model:", m.modelInput.View()))
+	if m.providerIdx == 2 {
+		if len(m.modelList) == 0 {
+			sb.WriteString(dimStyle.Render("  ctrl+r refresh models") + "\n")
+		} else {
+			sb.WriteString(dimStyle.Render("  ctrl+n/ctrl+b select model") + "\n")
+			limit := len(m.modelList)
+			if limit > 6 {
+				limit = 6
+			}
+			for i := 0; i < limit; i++ {
+				prefix := "    "
+				name := dimStyle.Render(m.modelList[i])
+				if i == m.modelListIdx {
+					prefix = activeStyle.Render("  > ")
+					name = activeStyle.Render(m.modelList[i])
+				}
+				sb.WriteString(prefix + name + "\n")
+			}
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("  %-10s %s\n", "Proxy:", dimStyle.Render("https://litellm-proxy-93ef.onrender.com/v1")))
+	}
+	if m.settingsError != "" {
+		style := errStyle
+		if m.settingsError == "saved" {
+			style = okStyle
+		}
+		sb.WriteString("  " + style.Render(m.settingsError) + "\n")
+	}
+	sb.WriteString(dimStyle.Render("  ctrl+w save provider") + "\n\n")
+
+	sb.WriteString(sectionStyle.Render("-- Whisper STT") + "\n\n")
+	sb.WriteString(fmt.Sprintf("%s%-10s %s\n\n", cursor(3), "Grok API:", m.grokInput.View()))
+
+	sb.WriteString(sectionStyle.Render("-- Vercel Deployment") + "\n\n")
+	vercelStatus := ""
+	if m.vercelInput.Value() != "" {
+		vercelStatus = " " + okStyle.Render("set")
+	}
+	sb.WriteString(fmt.Sprintf("%s%-10s %s%s\n\n", cursor(4), "Token:", m.vercelInput.View(), vercelStatus))
+
+	sb.WriteString(sectionStyle.Render("-- Theme") + "\n\n")
+	for i, name := range ui.ThemeOrder {
+		th := ui.Themes[name]
+		row := settingsThemeStart + i
+		label := th.Name
+		dot := lipgloss.NewStyle().Foreground(th.Primary).Render("*")
+		isCurrent := name == m.themeName || (m.themeName == "" && name == "default")
+		if row == m.settingsCursor {
+			label = activeStyle.Render(label)
+		} else {
+			label = dimStyle.Render(label)
+		}
+		tag := ""
+		if isCurrent {
+			tag = " " + okStyle.Render("active")
+		}
+		sb.WriteString(fmt.Sprintf("%s%s %s%s\n", cursor(row), dot, label, tag))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(dimStyle.Render("up/down navigate - enter apply theme - ctrl+s close") + "\n")
+
+	return borderStyle.Render(sb.String())
+}
+
 func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
@@ -2512,7 +2943,7 @@ func (m model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.grokInput.Blur()
 		return m, nil
 	}
-	
+
 	switch msg.String() {
 	case "up", "shift+tab":
 		if m.settingsCursor > 0 {
@@ -2623,19 +3054,19 @@ func (m model) renderSettings() string {
 
 	// ── API Configuration ────────────────────────────────────────────────
 	sb.WriteString(sectionStyle.Render("── API Configuration") + "\n\n")
-	
+
 	apiCursor := "  "
 	if m.settingsCursor == 0 {
 		apiCursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
 	}
 	sb.WriteString(fmt.Sprintf("%s%-10s %s\n", apiCursor, "API Key:", m.apiInput.View()))
-	
+
 	modCursor := "  "
 	if m.settingsCursor == 1 {
 		modCursor = lipgloss.NewStyle().Foreground(t.Primary).Bold(true).Render("▸ ")
 	}
 	sb.WriteString(fmt.Sprintf("%s%-10s %s\n", modCursor, "Model:", m.modelInput.View()))
-	
+
 	sb.WriteString(fmt.Sprintf("  %-10s %s\n\n", "Proxy:", dimStyle.Render("https://litellm-proxy-93ef.onrender.com/v1")))
 
 	// ── Grok / STT ───────────────────────────────────────────────────────
