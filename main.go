@@ -372,6 +372,7 @@ type dbReadyMsg struct {
 	providerCfg dbx.ProviderConfigRow
 	providerOK  bool
 	providerErr error
+	llmClient   *openai.Client
 	grokKey     string
 	vercelToken string
 }
@@ -411,7 +412,7 @@ func initDB() tea.Msg {
 		applyTheme(ui.GetTheme(themeName))
 	}
 
-	apiKey := os.Getenv("INFERX_API_KEY")
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
 	}
@@ -433,6 +434,22 @@ func initDB() tea.Msg {
 			Model:    modelName,
 		}
 	}
+	if strings.TrimSpace(providerCfg.Model) == "" {
+		providerCfg.Model = modelName
+	}
+	llmClient, buildErr := llm.BuildClient(llm.ProviderConfig{
+		Provider: providerCfg.Provider,
+		APIKey:   providerCfg.APIKey,
+		BaseURL:  providerCfg.BaseURL,
+		Model:    providerCfg.Model,
+	})
+	if buildErr != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize LLM provider %q: %v\n", providerCfg.Provider, buildErr)
+		os.Exit(1)
+	}
+	llm.SetActiveClient(llmClient)
+	llm.SetReactModel(providerCfg.Model)
+	llm.CurrentAPIKey = providerCfg.APIKey
 
 	grokKey := ""
 	if dbGrok, ok, _ := db.GetSetting(ctx, "grok_key"); ok && dbGrok != "" {
@@ -454,6 +471,7 @@ func initDB() tea.Msg {
 		providerCfg: providerCfg,
 		providerOK:  providerOK,
 		providerErr: providerErr,
+		llmClient:   llmClient,
 		grokKey:     grokKey,
 		vercelToken: vercelToken,
 	}
@@ -747,21 +765,12 @@ func initialModel() model {
 	promptIn.Width = 60
 
 	bridge := &promptBridge{}
-
-	apiKey := os.Getenv("INFERX_API_KEY")
-	if apiKey == "" {
-		apiKey = "sk-FQO1aH7bCuogvr8cTeeVEA"
-	}
-	llmClient := llm.NewClient(apiKey)
-	llm.SetReactModel(llm.DefaultReactModel)
-	llm.SetActiveClient(llmClient)
 	mcpMgr := mcp.NewManager()
 
 	return model{
 		viewMode:   ViewDashboard,
 		workers:    worker.NewPool(),
 		qdrant:     qdrant.New(),
-		qClient:    qdrant.NewClient("http://127.0.0.1:6333", llmClient),
 		mcpManager: mcpMgr,
 
 		dashItems: []dashItem{
@@ -778,7 +787,6 @@ func initialModel() model {
 		vercelInput:      vercelIn,
 		agentPromptInput: promptIn,
 		bridge:           bridge,
-		client:           llmClient,
 		registry:         tools.NewRegistry(fs),
 		perms:            tools.NewPermissionManager(),
 		executor:         tools.NewReactExecutor(wd, mcpMgr, bridge.ask),
@@ -1325,20 +1333,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.providerCfg.Model != "" {
 				m.modelInput.SetValue(msg.providerCfg.Model)
 			}
-			client, err := llm.BuildClient(llm.ProviderConfig{
-				Provider: msg.providerCfg.Provider,
-				APIKey:   msg.providerCfg.APIKey,
-				BaseURL:  msg.providerCfg.BaseURL,
-				Model:    msg.providerCfg.Model,
-			})
-			if err != nil {
-				m.settingsError = err.Error()
-			} else {
-				m.client = client
-				llm.SetActiveClient(client)
-				llm.SetReactModel(msg.providerCfg.Model)
-				m.qClient = qdrant.NewClient("http://127.0.0.1:6333", client)
-			}
+		}
+		if msg.llmClient != nil {
+			m.client = msg.llmClient
+			m.qClient = qdrant.NewClient("http://127.0.0.1:6333", msg.llmClient)
 		}
 		if msg.grokKey != "" {
 			m.grokInput.SetValue(msg.grokKey)
