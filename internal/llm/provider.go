@@ -3,13 +3,16 @@ package llm
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
 
 const defaultOllamaBaseURL = "http://localhost:11434"
 const defaultAnthropicBaseURL = "https://litellm-proxy-93ef.onrender.com/v1"
+const ollamaHealthTimeout = 2 * time.Second
 
 type ProviderConfig struct {
 	Provider string `json:"provider"`
@@ -54,7 +57,7 @@ func BuildClient(cfg ProviderConfig) (*openai.Client, error) {
 }
 
 func OllamaHealth(ctx context.Context, baseURL string) error {
-	client := newOllamaClient(baseURL)
+	client := newOllamaClientWithHTTPClient(baseURL, &http.Client{Timeout: ollamaHealthTimeout})
 	if _, err := client.ListModels(ctx); err != nil {
 		return fmt.Errorf("ollama health: %w", err)
 	}
@@ -77,11 +80,18 @@ func ListOllamaModels(ctx context.Context, baseURL string) ([]string, error) {
 }
 
 func newOllamaClient(baseURL string) *openai.Client {
+	return newOllamaClientWithHTTPClient(baseURL, nil)
+}
+
+func newOllamaClientWithHTTPClient(baseURL string, httpClient openai.HTTPDoer) *openai.Client {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base == "" {
 		base = defaultOllamaBaseURL
 	}
 	cfg := openai.DefaultConfig("ollama")
 	cfg.BaseURL = base + "/v1"
+	if httpClient != nil {
+		cfg.HTTPClient = httpClient
+	}
 	return openai.NewClientWithConfig(cfg)
 }
