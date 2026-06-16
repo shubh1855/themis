@@ -1292,6 +1292,15 @@ func moveIndex(current, delta, length int) int {
 	return current
 }
 
+func modelIndex(models []string, selected string) int {
+	for i, model := range models {
+		if model == selected {
+			return i
+		}
+	}
+	return -1
+}
+
 // ── Update ──────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1356,6 +1365,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ollamaChecked = true
 		m.ollamaOK = msg.Err == nil
 		if msg.Err != nil {
+			m.modelList = nil
+			m.modelListIdx = 0
 			m.settingsError = msg.Err.Error()
 		} else if m.settingsError != "saved" {
 			m.settingsError = ""
@@ -1364,13 +1375,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case OllamaModelsMsg:
 		if msg.Err != nil {
+			m.modelList = nil
+			m.modelListIdx = 0
 			m.settingsError = msg.Err.Error()
 			return m, nil
 		}
 		m.modelList = msg.Models
 		m.modelListIdx = moveIndex(m.modelListIdx, 0, len(m.modelList))
-		if len(m.modelList) > 0 && m.modelInput.Value() == "" {
-			m.modelInput.SetValue(m.modelList[m.modelListIdx])
+		if len(m.modelList) > 0 {
+			selectedIdx := modelIndex(m.modelList, m.modelInput.Value())
+			if selectedIdx >= 0 {
+				m.modelListIdx = selectedIdx
+			} else {
+				m.modelInput.SetValue(m.modelList[m.modelListIdx])
+			}
 		}
 		m.settingsError = ""
 		return m, nil
@@ -2690,6 +2708,18 @@ func (m model) saveProviderConfig() (model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) providerSwitchCmd() tea.Cmd {
+	m.settingsError = ""
+	m.ollamaChecked = false
+	m.ollamaOK = false
+	if m.providerIdx == 2 {
+		return ollamaHealthCmd(m.baseURLInput.Value())
+	}
+	m.modelList = nil
+	m.modelListIdx = 0
+	return nil
+}
+
 func (m model) updateProviderSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	var cmds []tea.Cmd
@@ -2707,6 +2737,9 @@ func (m model) updateProviderSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.saveProviderConfig()
 	case "ctrl+r":
 		if m.providerIdx == 2 {
+			m.settingsError = ""
+			m.ollamaChecked = false
+			m.ollamaOK = false
 			return m, tea.Batch(ollamaHealthCmd(m.baseURLInput.Value()), ollamaModelsCmd(m.baseURLInput.Value()))
 		}
 	case "ctrl+n":
@@ -2728,25 +2761,22 @@ func (m model) updateProviderSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left":
 		if m.settingsCursor == 0 {
 			m.providerIdx = moveIndex(m.providerIdx, -1, 3)
-			m.settingsError = ""
-			if m.providerIdx == 2 {
-				cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+			if cmd := m.providerSwitchCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 	case "right", " ":
 		if m.settingsCursor == 0 {
 			m.providerIdx = (m.providerIdx + 1) % 3
-			m.settingsError = ""
-			if m.providerIdx == 2 {
-				cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+			if cmd := m.providerSwitchCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 	case "enter":
 		if m.settingsCursor == 0 {
 			m.providerIdx = (m.providerIdx + 1) % 3
-			m.settingsError = ""
-			if m.providerIdx == 2 {
-				cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
+			if cmd := m.providerSwitchCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		} else if m.settingsCursor == 1 && m.providerIdx == 2 {
 			cmds = append(cmds, ollamaHealthCmd(m.baseURLInput.Value()))
@@ -2854,12 +2884,12 @@ func (m model) renderProviderSettings() string {
 	sb.WriteString(cursor(0) + strings.Join(tabs, "  ") + "\n")
 	if m.providerIdx == 2 {
 		sb.WriteString(fmt.Sprintf("%s%-10s %s\n", cursor(1), "Base URL:", m.baseURLInput.View()))
-		if m.ollamaChecked {
-			if m.ollamaOK {
-				sb.WriteString("  " + okStyle.Render("connected") + "\n")
-			} else {
-				sb.WriteString("  " + errStyle.Render("unreachable - run: ollama serve") + "\n")
-			}
+		if !m.ollamaChecked {
+			sb.WriteString("  " + dimStyle.Render("checking ollama...") + "\n")
+		} else if m.ollamaOK {
+			sb.WriteString("  " + okStyle.Render("connected") + "\n")
+		} else {
+			sb.WriteString("  " + errStyle.Render("unreachable - run: ollama serve") + "\n")
 		}
 	} else {
 		sb.WriteString(fmt.Sprintf("%s%-10s %s\n", cursor(1), "API Key:", m.apiInput.View()))
