@@ -181,19 +181,19 @@ var toolDescs = map[string]string{
 	"vercel_list":             `{"tool":"vercel_list"} — list all Vercel deployments`,
 	"vercel_logs":             `{"tool":"vercel_logs","url":"<deployment-url>"} — fetch logs for a Vercel deployment`,
 
-	"browser_click":           `{"tool":"browser_click","selector":"<css_selector>"} — clicks element`,
-	"browser_type":            `{"tool":"browser_type","selector":"<css_selector>","text":"<text>"} — types into input`,
-	"browser_scroll":          `{"tool":"browser_scroll","direction":"<down|up>","amount":500} — scroll page`,
-	"browser_highlight":       `{"tool":"browser_highlight","selector":"<css>"} — highlights element with cyan overlay for the user to see`,
-	"browser_hover":           `{"tool":"browser_hover","selector":"<css>"} — smoothly moves mouse to element and takes screenshot`,
-	"browser_inspect":         `{"tool":"browser_inspect","selector":"<css/label>"} — reads accessibility tree + screenshot of element`,
-	"browser_screenshot":      `{"tool":"browser_screenshot"} — captures screenshot and parses any internal console errors`,
-	"browser_view":            `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
-	"browser_run_js":          `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
-	"browser_close":           `{"tool":"browser_close"} — closes the browser if open`,
-	"task_plan":               `{"tool":"task_plan","steps":["step 1","step 2",...]} — declare all planned steps upfront (REQUIRED at start of every task)`,
-	"complete_step":           `{"tool":"complete_step","step":"<step name>"} — mark a planned step as done`,
-	"delegate":                `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<complete self-contained task instructions>"} — delegate work to a specialist sub-agent`,
+	"browser_click":      `{"tool":"browser_click","selector":"<css_selector>"} — clicks element`,
+	"browser_type":       `{"tool":"browser_type","selector":"<css_selector>","text":"<text>"} — types into input`,
+	"browser_scroll":     `{"tool":"browser_scroll","direction":"<down|up>","amount":500} — scroll page`,
+	"browser_highlight":  `{"tool":"browser_highlight","selector":"<css>"} — highlights element with cyan overlay for the user to see`,
+	"browser_hover":      `{"tool":"browser_hover","selector":"<css>"} — smoothly moves mouse to element and takes screenshot`,
+	"browser_inspect":    `{"tool":"browser_inspect","selector":"<css/label>"} — reads accessibility tree + screenshot of element`,
+	"browser_screenshot": `{"tool":"browser_screenshot"} — captures screenshot and parses any internal console errors`,
+	"browser_view":       `{"tool":"browser_view","url":"<url>"} — opens a visible browser window, navigates to the URL, and reads text. leaves it open for user.`,
+	"browser_run_js":     `{"tool":"browser_run_js","script":"<js code>"} — runs a JS script in the open browser page`,
+	"browser_close":      `{"tool":"browser_close"} — closes the browser if open`,
+	"task_plan":          `{"tool":"task_plan","steps":["step 1","step 2",...]} — declare all planned steps upfront (REQUIRED at start of every task)`,
+	"complete_step":      `{"tool":"complete_step","step":"<step name>"} — mark a planned step as done`,
+	"delegate":           `{"tool":"delegate","agent":"<Athena|Hephaestus|Apollo|Hermes|Ares|Prometheus>","task":"<complete self-contained task instructions>"} — delegate work to a specialist sub-agent`,
 }
 
 func reactSuffix(agent AgentID, mcpToolDescs string) string {
@@ -393,13 +393,15 @@ func streamCall(client *openai.Client, messages []openai.ChatCompletionMessage, 
 	inputEst := estimateTokens(messages)
 	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: 0}
 
+	model := GetReactModel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	stream, err := client.CreateChatCompletionStream(
 		ctx,
 		openai.ChatCompletionRequest{
-			Model:    reactModel,
+			Model:    model,
 			Messages: messages,
 			StreamOptions: &openai.StreamOptions{
 				IncludeUsage: true,
@@ -483,12 +485,14 @@ func nonStreamCall(client *openai.Client, messages []openai.ChatCompletionMessag
 	inputEst := estimateTokens(messages)
 	ch <- TokenUpdateMsg{Agent: agent, InputTokens: inputEst, OutputTokens: 0}
 
+	model := GetReactModel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	resp, err := client.CreateChatCompletion(
 		ctx,
-		openai.ChatCompletionRequest{Model: reactModel, Messages: messages},
+		openai.ChatCompletionRequest{Model: model, Messages: messages},
 	)
 	if err != nil {
 		return "", err

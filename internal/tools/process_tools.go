@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,7 +115,7 @@ func HandleWaitPort(ctx Context) models.ToolResponse {
 	timeoutSec := models.ArgInt(ctx.Req.Args, "timeout", 30)
 	timeout := time.Duration(timeoutSec) * time.Second
 
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
